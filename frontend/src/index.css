@@ -1,0 +1,180 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   GLOBAL
+============================================================ */
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-grid-950 text-grid-100 font-body antialiased;
+
+  background-image:
+    radial-gradient(
+      60rem 30rem at 90% -10%,
+      rgba(14, 201, 120, 0.10),
+      transparent 60%
+    ),
+    radial-gradient(
+      50rem 30rem at -10% 20%,
+      rgba(255, 159, 28, 0.06),
+      transparent 60%
+    );
+}
+
+/* ============================================================
+   SCROLLBAR
+============================================================ */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #344A6B;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #526A8C;
+}
+
+/* ============================================================
+   SHARED CARD
+============================================================ */
+
+.card {
+  @apply rounded-2xl
+    border border-grid-700/70
+    bg-grid-850/95
+    shadow-card
+    backdrop-blur-sm;
+}
+
+/* ============================================================
+   PRIMARY BUTTON
+============================================================ */
+
+.btn-primary {
+  @apply inline-flex
+    items-center
+    justify-center
+    gap-2
+    rounded-xl
+    bg-volt-500
+    px-5
+    py-2.5
+    font-display
+    font-semibold
+    text-grid-950
+    transition
+    hover:bg-volt-400
+    hover:shadow-glow
+    active:scale-[0.98];
+}
+
+/* ============================================================
+   SECONDARY BUTTON
+============================================================ */
+
+.btn-secondary {
+  @apply inline-flex
+    items-center
+    justify-center
+    gap-2
+    rounded-xl
+    border border-grid-600
+    bg-grid-800
+    px-5
+    py-2.5
+    font-display
+    font-semibold
+    text-grid-100
+    transition
+    hover:border-volt-500/60
+    hover:bg-grid-700
+    hover:text-volt-300;
+}
+
+/* ============================================================
+   INPUT
+============================================================ */
+
+.input-field {
+  @apply w-full
+    rounded-xl
+    border border-grid-600
+    bg-grid-900/90
+    px-4
+    py-2.5
+    text-grid-50
+    placeholder:text-grid-400
+    outline-none
+    transition
+    focus:border-volt-500
+    focus:ring-2
+    focus:ring-volt-500/20;
+}
+
+/* ============================================================
+   EYEBROW LABEL
+============================================================ */
+
+.label-eyebrow {
+  @apply font-mono
+    text-xs
+    uppercase
+    tracking-[0.2em]
+    text-volt-400;
+}
+
+/* ============================================================
+   STAT VALUE
+============================================================ */
+
+.stat-value {
+  @apply font-display
+    text-3xl
+    font-bold
+    text-grid-50;
+}
+
+/* ============================================================
+   OPTIONAL TEXT HELPERS
+============================================================ */
+
+/*
+  Use these consistently throughout VoltGrid:
+
+  text-grid-50
+  → Main headings / important values
+
+  text-grid-100
+  → Primary body text
+
+  text-grid-200
+  → Strong secondary text
+
+  text-grid-300
+  → Normal descriptions
+
+  text-grid-400
+  → Metadata / supporting information
+
+  text-grid-500
+  → Very subtle supporting information
+
+  text-grid-600
+  → Avoid for important readable text
+*/

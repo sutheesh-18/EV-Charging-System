@@ -1,0 +1,57 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: evcharge_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: evcharge
+      POSTGRES_PASSWORD: evcharge
+      POSTGRES_DB: evcharge
+    ports:
+      - "5432:5432"
+    volumes:
+      - evcharge_pgdata:/var/lib/postgresql/data
+    # Note: database/schema.sql is kept as a reference DDL file. The backend
+    # creates all tables automatically via SQLAlchemy on startup, so it is
+    # intentionally NOT auto-mounted here (that would conflict with duplicate
+    # ENUM type creation). Run it manually with `psql` only if you want to
+    # inspect/apply the schema outside of the app, against an empty database.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evcharge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    container_name: evcharge_backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://evcharge:evcharge@db:5432/evcharge
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app/ml/saved_models:/app/app/ml/saved_models
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: /api/v1
+    container_name: evcharge_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  evcharge_pgdata:

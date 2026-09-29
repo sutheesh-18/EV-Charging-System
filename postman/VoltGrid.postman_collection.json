@@ -1,0 +1,231 @@
+{
+  "info": {
+    "name": "VoltGrid EV Charging API",
+    "description": "AI-Powered Smart EV Charging Network API collection.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8000/api/v1" },
+    { "key": "access_token", "value": "" },
+    { "key": "vehicle_id", "value": "1" },
+    { "key": "station_id", "value": "1" },
+    { "key": "charger_id", "value": "1" },
+    { "key": "booking_id", "value": "1" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"full_name\": \"Asha Driver\",\n  \"email\": \"asha@example.com\",\n  \"password\": \"Passw0rd!\",\n  \"role\": \"driver\"\n}" },
+            "url": "{{base_url}}/auth/register"
+          }
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const data = pm.response.json();",
+                  "if (data.access_token) { pm.collectionVariables.set('access_token', data.access_token); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"driver@evcharge.ai\",\n  \"password\": \"Password@123\"\n}" },
+            "url": "{{base_url}}/auth/login"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Users & Vehicles",
+      "item": [
+        {
+          "name": "Get Me",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }],
+            "url": "{{base_url}}/users/me"
+          }
+        },
+        {
+          "name": "Add Vehicle",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"My Nexon EV\",\n  \"manufacturer\": \"Tata\",\n  \"model\": \"Nexon EV Max\",\n  \"battery_capacity_kwh\": 40.5,\n  \"remaining_battery_percent\": 60,\n  \"charger_type\": \"CCS\",\n  \"vehicle_range_km\": 437,\n  \"charging_speed_kw\": 50\n}" },
+            "url": "{{base_url}}/users/me/vehicles"
+          }
+        },
+        {
+          "name": "List Vehicles",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }],
+            "url": "{{base_url}}/users/me/vehicles"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Stations",
+      "item": [
+        {
+          "name": "List Stations",
+          "request": { "method": "GET", "url": "{{base_url}}/stations" }
+        },
+        {
+          "name": "Nearby Stations",
+          "request": { "method": "GET", "url": "{{base_url}}/stations/nearby?lat=13.04&lon=80.23&radius_km=15" }
+        },
+        {
+          "name": "Station Detail",
+          "request": { "method": "GET", "url": "{{base_url}}/stations/{{station_id}}" }
+        },
+        {
+          "name": "Live Queue",
+          "request": { "method": "GET", "url": "{{base_url}}/stations/{{station_id}}/queue" }
+        }
+      ]
+    },
+    {
+      "name": "Predictions",
+      "item": [
+        {
+          "name": "Queue Prediction",
+          "request": { "method": "GET", "url": "{{base_url}}/predictions/queue/{{station_id}}" }
+        },
+        {
+          "name": "Waiting Time Prediction",
+          "request": { "method": "GET", "url": "{{base_url}}/predictions/waiting-time/{{station_id}}" }
+        },
+        {
+          "name": "Demand Forecast",
+          "request": { "method": "GET", "url": "{{base_url}}/predictions/demand/{{station_id}}?horizon_hours=24" }
+        },
+        {
+          "name": "Charger Failure Risk",
+          "request": { "method": "GET", "url": "{{base_url}}/predictions/charger-failure/{{charger_id}}" }
+        }
+      ]
+    },
+    {
+      "name": "Recommendations",
+      "item": [
+        {
+          "name": "Get Recommendations",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"vehicle_id\": {{vehicle_id}},\n  \"current_latitude\": 13.04,\n  \"current_longitude\": 80.23,\n  \"max_results\": 5\n}" },
+            "url": "{{base_url}}/recommendations"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Bookings",
+      "item": [
+        {
+          "name": "Create Booking",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"vehicle_id\": {{vehicle_id}},\n  \"station_id\": {{station_id}},\n  \"charger_id\": {{charger_id}},\n  \"slot_start\": \"2026-08-01T10:00:00\",\n  \"slot_end\": \"2026-08-01T10:30:00\"\n}" },
+            "url": "{{base_url}}/bookings"
+          }
+        },
+        {
+          "name": "My Bookings",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }],
+            "url": "{{base_url}}/bookings/me"
+          }
+        },
+        {
+          "name": "Cancel Booking",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }],
+            "url": "{{base_url}}/bookings/{{booking_id}}/cancel"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Analytics",
+      "item": [
+        {
+          "name": "Carbon Footprint",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }],
+            "url": "{{base_url}}/analytics/carbon-footprint/me"
+          }
+        },
+        {
+          "name": "Spending",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }],
+            "url": "{{base_url}}/analytics/spending/me"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Operator",
+      "item": [
+        {
+          "name": "Operator Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }],
+            "url": "{{base_url}}/operator/dashboard"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "item": [
+        {
+          "name": "Overview",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }],
+            "url": "{{base_url}}/admin/overview"
+          }
+        },
+        {
+          "name": "List Users",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{access_token}}" }],
+            "url": "{{base_url}}/admin/users"
+          }
+        }
+      ]
+    }
+  ]
+}
