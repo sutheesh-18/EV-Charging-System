@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.api.deps import get_current_user, require_roles
+from app.api.deps import get_current_user
 from app.models.user import User
 from app.models.station import (
     ChargingStation,
@@ -17,6 +17,7 @@ from app.schemas.station import (
     StationOut,
     StationCreate,
     StationNearby,
+    UnifiedStation,
     ChargerOut,
     ChargerCreate,
     FeedbackCreate,
@@ -24,6 +25,9 @@ from app.schemas.station import (
 )
 from app.services.recommendation_engine import haversine_km
 from app.services.queue_service import get_live_queue
+from app.services.opencharge_map import get_nearby_stations
+from app.services.station_normalizer import normalize_ocm_stations
+from app.services.station_merger import merge_station_sources
 
 
 router = APIRouter(
@@ -60,17 +64,31 @@ def list_stations(
 
 @router.get(
     "/nearby",
-    response_model=List[StationNearby],
+    response_model=List[UnifiedStation],
 )
-def nearby_stations(
+async def nearby_stations(
     lat: float = Query(...),
     lon: float = Query(...),
     radius_km: float = Query(15.0),
     db: Session = Depends(get_db),
 ):
+    """
+    Get nearby charging stations from:
+
+    1. VoltGrid PostgreSQL database
+    2. Open Charge Map
+
+    The two sources are merged and probable duplicate
+    physical locations are removed.
+    """
+
+    # ========================================================
+    # 1. GET VOLTGRID DATABASE STATIONS
+    # ========================================================
+
     stations = db.query(ChargingStation).all()
 
-    results = []
+    voltgrid_stations = []
 
     for station in stations:
         distance = haversine_km(
@@ -86,30 +104,100 @@ def nearby_stations(
                 station,
             )
 
-            results.append(
-                StationNearby(
-                    id=station.id,
-                    name=station.name,
-                    address=station.address,
-                    latitude=station.latitude,
-                    longitude=station.longitude,
-                    distance_km=round(distance, 2),
-                    available_chargers=live["available_chargers"],
-                    total_chargers=live["total_chargers"],
-                    charging_cost_per_kwh=(
+            voltgrid_stations.append(
+                {
+                    "source": "voltgrid",
+                    "id": station.id,
+                    "name": station.name,
+                    "address": station.address,
+                    "latitude": station.latitude,
+                    "longitude": station.longitude,
+                    "distance_km": round(distance, 2),
+                    "available_chargers": live["available_chargers"],
+                    "total_chargers": live["total_chargers"],
+                    "charging_cost_per_kwh": (
                         station.charging_cost_per_kwh
                     ),
-                    reliability_score=(
+                    "reliability_score": (
                         station.reliability_score
                     ),
-                )
+                    "status": (
+                        "Available"
+                        if live["available_chargers"] > 0
+                        else "Busy"
+                    ),
+                    "is_operational": True,
+                    "connectors": [],
+                }
             )
 
-    results.sort(
-        key=lambda station: station.distance_km
+    # ========================================================
+    # 2. GET OPEN CHARGE MAP STATIONS
+    # ========================================================
+
+    external_stations = await get_nearby_stations(
+        latitude=lat,
+        longitude=lon,
+        distance_km=radius_km,
+        max_results=50,
     )
 
-    return results
+    normalized_external_stations = normalize_ocm_stations(
+        external_stations,
+        search_latitude=lat,
+        search_longitude=lon,
+    )
+
+    # ========================================================
+    # 3. MERGE BOTH SOURCES
+    # ========================================================
+
+    merged_stations = merge_station_sources(
+        voltgrid_stations=voltgrid_stations,
+        external_stations=normalized_external_stations,
+    )
+
+    # ========================================================
+    # 4. RETURN UNIFIED RESPONSE
+    # ========================================================
+
+    return [
+        UnifiedStation(
+            **station
+        )
+        for station in merged_stations
+    ]
+
+
+# ============================================================
+# TEST OPEN CHARGE MAP
+# ============================================================
+
+@router.get("/external-nearby")
+async def external_nearby_stations(
+    lat: float = Query(...),
+    lon: float = Query(...),
+    radius_km: float = Query(10.0),
+):
+    """
+    Retrieve nearby charging stations from Open Charge Map
+    and normalize them into the VoltGrid format.
+    """
+
+    stations = await get_nearby_stations(
+        latitude=lat,
+        longitude=lon,
+        distance_km=radius_km,
+        max_results=50,
+    )
+
+    normalized_stations = normalize_ocm_stations(
+        stations,
+        search_latitude=lat,
+        search_longitude=lon,
+    )
+
+    return normalized_stations
 
 
 # ============================================================

@@ -67,6 +67,38 @@ class StationNearby(BaseModel):
     reliability_score: float
 
 
+class UnifiedStation(BaseModel):
+    source: str
+
+    id: int | None = None
+    external_id: int | None = None
+
+    name: str
+    address: str
+
+    latitude: float
+    longitude: float
+
+    distance_km: float | None = None
+
+    operator: str | None = None
+
+    available_chargers: int | None = None
+    total_chargers: int | None = None
+
+    charging_cost_per_kwh: float | None = None
+    reliability_score: float | None = None
+
+    status: str | None = None
+    is_operational: bool | None = None
+
+    usage_type: str | None = None
+    is_pay_at_location: bool | None = None
+    is_membership_required: bool | None = None
+
+    connectors: list[dict] = [] 
+
+
 class FeedbackCreate(BaseModel):
     station_id: int
     rating: float

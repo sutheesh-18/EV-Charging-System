@@ -18,3 +18,4 @@ xgboost>=3.0.4
 lightgbm>=4.6.0
 joblib>=1.5.1
 python-dotenv>=1.1.1
+httpx>=0.28.1

@@ -224,7 +224,7 @@ export default function Landing() {
                     </h2>
 
                     <p className="mt-1 text-sm text-slate-400">
-                      Velachery · Chennai
+                      Coimbatore, TN
                     </p>
                   </div>
 

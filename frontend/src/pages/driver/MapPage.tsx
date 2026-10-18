@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   BatteryCharging,
@@ -37,39 +38,68 @@ interface Charger {
   id: number;
   charger_code?: string;
   charger_type?: string;
-  power_kw?: number;
+  power_kw?: number | null;
   status?: string;
 }
 
+interface Connector {
+  type?: string | null;
+  power_kw?: number | null;
+  amps?: number | null;
+  voltage?: number | null;
+  level?: string | null;
+  quantity?: number | null;
+  status?: string | null;
+}
+
 interface Station {
-  id: number;
+  // VoltGrid stations have `id`; Open Charge Map stations have `external_id`.
+  id?: number | null;
+  external_id?: number | null;
+  source?: string;
+
   name: string;
-  address?: string;
-  city?: string;
+  address?: string | null;
+  city?: string | null;
 
-  latitude?: number;
-  longitude?: number;
+  latitude?: number | null;
+  longitude?: number | null;
 
-  distance_km?: number;
+  distance_km?: number | null;
 
-  total_chargers?: number;
-  available_chargers?: number;
+  operator?: string | null;
 
-  charger_power_kw?: number;
+  total_chargers?: number | null;
+  available_chargers?: number | null;
 
-  charging_cost_per_kwh?: number;
-  price_per_kwh?: number;
+  charger_power_kw?: number | null;
 
-  predicted_wait_minutes?: number;
+  charging_cost_per_kwh?: number | null;
+  price_per_kwh?: number | null;
 
-  average_rating?: number;
-  rating?: number;
+  predicted_wait_minutes?: number | null;
 
-  reliability_score?: number;
-  green_energy_percent?: number;
+  average_rating?: number | null;
+  rating?: number | null;
 
+  reliability_score?: number | null;
+  green_energy_percent?: number | null;
+
+  status?: string | null;
+  is_operational?: boolean | null;
+
+  usage_type?: string | null;
+  is_pay_at_location?: boolean | null;
+  is_membership_required?: boolean | null;
+
+  connectors?: Connector[];
   chargers?: Charger[];
 }
+
+type LocatedStation = Station & {
+  latitude: number;
+  longitude: number;
+};
 
 interface Vehicle {
   id: number;
@@ -101,15 +131,25 @@ interface Preferences {
   preferLowWait: boolean;
 }
 
-interface ScoredStation extends Station {
+interface ScoredStation extends LocatedStation {
+  station_key: string;
   calculated_distance_km: number | null;
   ai_score: number;
   reachable: boolean;
-  calculated_wait_minutes: number;
-  calculated_power_kw: number;
-  calculated_price: number;
-  calculated_available: number;
+  calculated_wait_minutes: number | null;
+  calculated_power_kw: number | null;
+  calculated_price: number | null;
+  calculated_available: number | null;
+  calculated_total: number | null;
+  calculated_rating: number | null;
+  neutral_factors: string[];
   reasons: string[];
+}
+
+interface DisplayConnector {
+  key: string;
+  title: string;
+  details: string[];
 }
 
 /* ============================================================
@@ -172,63 +212,380 @@ function normalize(
   return invert ? 1 - normalized : normalized;
 }
 
-function getPower(station: Station): number {
-  if (typeof station.charger_power_kw === "number") {
+function isNum(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value)
+  );
+}
+
+/**
+ * Score a value against the range of KNOWN values.
+ * Unknown values always receive a neutral score (0.5),
+ * so missing external data is never rewarded or punished.
+ */
+function scoreKnown(
+  value: number | null,
+  knownValues: number[],
+  invert = false,
+): number {
+  if (value === null || !knownValues.length) {
+    return 0.5;
+  }
+
+  return normalize(
+    value,
+    Math.min(...knownValues),
+    Math.max(...knownValues),
+    invert,
+  );
+}
+
+function roundCoordinate(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+function hasCoordinates(
+  station: Station,
+): station is LocatedStation {
+  return (
+    isNum(station.latitude) &&
+    isNum(station.longitude)
+  );
+}
+
+/**
+ * Stable identity for both VoltGrid and Open Charge Map
+ * stations. Used for React keys and selected-station lookup.
+ */
+function getStationKey(station: Station): string {
+  if (
+    station.source === "openchargemap" &&
+    isNum(station.external_id)
+  ) {
+    return `ocm-${station.external_id}`;
+  }
+
+  if (isNum(station.id)) {
+    return `voltgrid-${station.id}`;
+  }
+
+  return `fallback-${station.name}-${
+    station.latitude ?? "na"
+  }-${station.longitude ?? "na"}`;
+}
+
+function getSourceLabel(station: Station): string {
+  if (station.source === "openchargemap") {
+    return "Open Charge Map";
+  }
+
+  if (station.source === "voltgrid") {
+    return "VoltGrid";
+  }
+
+  return station.source ?? "Unknown source";
+}
+
+function getPower(station: Station): number | null {
+  if (
+    isNum(station.charger_power_kw) &&
+    station.charger_power_kw > 0
+  ) {
     return station.charger_power_kw;
   }
 
+  // Existing VoltGrid charger data first.
+  const chargerPowers = (station.chargers ?? [])
+    .map((charger) => charger.power_kw)
+    .filter(
+      (value): value is number =>
+        isNum(value) && value > 0,
+    );
+
+  if (chargerPowers.length) {
+    return Math.max(...chargerPowers);
+  }
+
+  // Fallback: Open Charge Map connector power.
+  const connectorPowers = (station.connectors ?? [])
+    .map((connector) => connector.power_kw)
+    .filter(
+      (value): value is number =>
+        isNum(value) && value > 0,
+    );
+
+  if (connectorPowers.length) {
+    return Math.max(...connectorPowers);
+  }
+
+  return null;
+}
+
+/**
+ * Live availability. Returns null when it is not really known,
+ * so "0 / 0" is never presented as real data.
+ */
+function getAvailability(
+  station: Station,
+): { available: number; total: number } | null {
+  if (
+    isNum(station.available_chargers) &&
+    isNum(station.total_chargers) &&
+    station.total_chargers > 0
+  ) {
+    return {
+      available: station.available_chargers,
+      total: station.total_chargers,
+    };
+  }
+
   if (station.chargers?.length) {
-    return Math.max(
-      ...station.chargers.map(
-        (charger) => charger.power_kw ?? 0,
-      ),
+    return {
+      available: station.chargers.filter(
+        (charger) =>
+          charger.status?.toLowerCase() ===
+          "available",
+      ).length,
+      total: station.chargers.length,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Number of connectors (physical quantity), NOT live availability.
+ */
+function getConnectorQuantity(
+  station: Station,
+): number | null {
+  const quantities = (station.connectors ?? [])
+    .map((connector) => connector.quantity)
+    .filter(
+      (value): value is number =>
+        isNum(value) && value > 0,
+    );
+
+  if (!quantities.length) {
+    return null;
+  }
+
+  return quantities.reduce(
+    (sum, value) => sum + value,
+    0,
+  );
+}
+
+function getPrice(station: Station): number | null {
+  if (isNum(station.charging_cost_per_kwh)) {
+    return station.charging_cost_per_kwh;
+  }
+
+  if (isNum(station.price_per_kwh)) {
+    return station.price_per_kwh;
+  }
+
+  return null;
+}
+
+function getRating(station: Station): number | null {
+  const rating =
+    station.average_rating ?? station.rating;
+
+  return isNum(rating) && rating > 0
+    ? rating
+    : null;
+}
+
+function getReliability(
+  station: Station,
+): number | null {
+  return isNum(station.reliability_score)
+    ? station.reliability_score
+    : null;
+}
+
+function getWait(station: Station): number | null {
+  return isNum(station.predicted_wait_minutes)
+    ? station.predicted_wait_minutes
+    : null;
+}
+
+function getGreen(station: Station): number | null {
+  return isNum(station.green_energy_percent)
+    ? station.green_energy_percent
+    : null;
+}
+
+function getStatusLabel(station: Station): string {
+  if (station.status) {
+    return station.status;
+  }
+
+  if (station.is_operational === true) {
+    return "Operational";
+  }
+
+  if (station.is_operational === false) {
+    return "Not operational";
+  }
+
+  return "Unknown";
+}
+
+function formatPower(power: number | null): string {
+  return power !== null
+    ? `${power} kW`
+    : "Power unavailable";
+}
+
+function formatPrice(price: number | null): string {
+  return price !== null
+    ? `₹${price.toFixed(2)}/kWh`
+    : "Price unavailable";
+}
+
+function formatAvailability(
+  available: number | null,
+  total: number | null,
+): string {
+  return available !== null && total !== null
+    ? `${available} / ${total} available`
+    : "Availability unavailable";
+}
+
+function formatRating(station: ScoredStation): string {
+  if (station.calculated_rating !== null) {
+    return station.calculated_rating.toFixed(1);
+  }
+
+  const reliability = getReliability(station);
+
+  if (reliability !== null) {
+    return `${Math.round(reliability)}% reliable`;
+  }
+
+  return "Rating unavailable";
+}
+
+function getDisplayConnectors(
+  station: Station,
+): DisplayConnector[] {
+  if (station.connectors?.length) {
+    return station.connectors.map(
+      (connector, index) => {
+        const details: string[] = [];
+
+        if (
+          isNum(connector.power_kw) &&
+          connector.power_kw > 0
+        ) {
+          details.push(`${connector.power_kw} kW`);
+        }
+
+        if (
+          isNum(connector.quantity) &&
+          connector.quantity > 0
+        ) {
+          details.push(`× ${connector.quantity}`);
+        }
+
+        if (connector.level) {
+          details.push(connector.level);
+        }
+
+        if (isNum(connector.voltage)) {
+          details.push(`${connector.voltage} V`);
+        }
+
+        if (isNum(connector.amps)) {
+          details.push(`${connector.amps} A`);
+        }
+
+        if (connector.status) {
+          details.push(connector.status);
+        }
+
+        return {
+          key: `connector-${index}`,
+          title: connector.type || "Connector",
+          details,
+        };
+      },
     );
   }
 
-  return 0;
-}
-
-function getAvailableChargers(station: Station): number {
-  if (typeof station.available_chargers === "number") {
-    return station.available_chargers;
-  }
-
   if (station.chargers?.length) {
-    return station.chargers.filter(
-      (charger) =>
-        charger.status?.toLowerCase() === "available",
-    ).length;
+    return station.chargers.map((charger) => {
+      const details: string[] = [];
+
+      if (
+        isNum(charger.power_kw) &&
+        charger.power_kw > 0
+      ) {
+        details.push(`${charger.power_kw} kW`);
+      }
+
+      if (charger.status) {
+        details.push(charger.status);
+      }
+
+      return {
+        key: `charger-${charger.id}`,
+        title:
+          charger.charger_type ||
+          charger.charger_code ||
+          "Charger",
+        details,
+      };
+    });
   }
 
-  return 0;
+  return [];
 }
 
-function getTotalChargers(station: Station): number {
-  if (typeof station.total_chargers === "number") {
-    return station.total_chargers;
-  }
+/* ============================================================
+   SMALL UI PIECES
+============================================================ */
 
-  return station.chargers?.length ?? 0;
-}
+function SourceBadge({
+  station,
+}: {
+  station: Station;
+}) {
+  const isExternal =
+    station.source === "openchargemap";
 
-function getPrice(station: Station): number {
   return (
-    station.charging_cost_per_kwh ??
-    station.price_per_kwh ??
-    0
+    <span
+      className={`rounded-full px-2 py-1 text-[11px] ${
+        isExternal
+          ? "bg-purple-500/10 text-purple-300"
+          : "bg-volt-500/10 text-volt-300"
+      }`}
+    >
+      {getSourceLabel(station)}
+    </span>
   );
 }
 
-function getRating(station: Station): number {
+function DetailTile({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
   return (
-    station.average_rating ??
-    station.rating ??
-    4
-  );
-}
+    <div className="rounded-lg bg-grid-950/60 p-2">
+      <p className="text-grid-300">{label}</p>
 
-function getWait(station: Station): number {
-  return station.predicted_wait_minutes ?? 10;
+      <p className="mt-1 break-words font-semibold text-grid-200">
+        {value}
+      </p>
+    </div>
+  );
 }
 
 /* ============================================================
@@ -274,8 +631,8 @@ export default function MapPage() {
   const [locationHistory, setLocationHistory] =
     useState<UserLocation[]>([]);
 
-  const [selectedStationId, setSelectedStationId] =
-    useState<number | null>(null);
+  const [selectedStationKey, setSelectedStationKey] =
+    useState<string | null>(null);
 
   const [showPreferences, setShowPreferences] =
     useState(false);
@@ -298,21 +655,71 @@ export default function MapPage() {
       }
     });
 
+  // Debounced so typing in the "Maximum distance" input does not
+  // fire one API request per keystroke.
+  const [debouncedRadiusKm, setDebouncedRadiusKm] =
+    useState(preferences.maxDistanceKm);
+
   const watchIdRef =
     useRef<number | null>(null);
 
+  const lastStationsRef =
+    useRef<Station[]>([]);
+
   /* ============================================================
-     LOAD STATIONS
+     DEBOUNCE SEARCH RADIUS
+  ============================================================ */
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedRadiusKm(
+        Math.max(1, preferences.maxDistanceKm),
+      );
+    }, 500);
+
+    return () => window.clearTimeout(timer);
+  }, [preferences.maxDistanceKm]);
+
+  /* ============================================================
+     QUERY LOCATION
+     Uses the user's location when available, otherwise the
+     existing default map location. Coordinates are rounded to
+     ~100 m so GPS jitter does not trigger a new request.
+  ============================================================ */
+
+  const queryLat = userLocation
+    ? roundCoordinate(userLocation.latitude)
+    : DEFAULT_LOCATION[0];
+
+  const queryLon = userLocation
+    ? roundCoordinate(userLocation.longitude)
+    : DEFAULT_LOCATION[1];
+
+  /* ============================================================
+     LOAD STATIONS (VoltGrid + Open Charge Map)
   ============================================================ */
 
   const {
-    data: apiStations = [],
+    data: nearbyData,
     isLoading: stationsLoading,
     isError: stationsError,
   } = useQuery<Station[]>({
-    queryKey: ["stations"],
+    queryKey: [
+      "stations-nearby",
+      queryLat,
+      queryLon,
+      debouncedRadiusKm,
+    ],
     queryFn: async () => {
-      const response = await api.get("/stations");
+      const response = await api.get<
+        Station[] | { stations?: Station[] }
+      >("/stations/nearby", {
+        params: {
+          lat: queryLat,
+          lon: queryLon,
+          radius_km: debouncedRadiusKm,
+        },
+      });
 
       if (Array.isArray(response.data)) {
         return response.data;
@@ -324,7 +731,21 @@ export default function MapPage() {
 
       return [];
     },
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
+
+  useEffect(() => {
+    if (nearbyData) {
+      lastStationsRef.current = nearbyData;
+    }
+  }, [nearbyData]);
+
+  // While a new area is loading, keep showing the previous real
+  // API response (avoids flicker). Never keep it after an error.
+  const apiStations: Station[] =
+    nearbyData ??
+    (stationsError ? [] : lastStationsRef.current);
 
   /* ============================================================
      LOAD VEHICLES
@@ -555,18 +976,33 @@ export default function MapPage() {
 
   /* ============================================================
      NORMALIZE STATIONS
+     Keep only stations with coordinates and remove any
+     accidental duplicate keys.
   ============================================================ */
 
   const stations = useMemo(() => {
-    return apiStations.filter(
-      (station) =>
-        typeof station.latitude === "number" &&
-        typeof station.longitude === "number",
-    );
+    const byKey = new Map<string, LocatedStation>();
+
+    for (const station of apiStations) {
+      if (!hasCoordinates(station)) {
+        continue;
+      }
+
+      const key = getStationKey(station);
+
+      if (!byKey.has(key)) {
+        byKey.set(key, station);
+      }
+    }
+
+    return Array.from(byKey.values());
   }, [apiStations]);
 
   /* ============================================================
      SCORE STATIONS
+     Unknown values (price, wait, power, rating, availability,
+     green energy) are scored neutrally (0.5) and never treated
+     as 0 / free / perfect.
   ============================================================ */
 
   const scoredStations = useMemo(() => {
@@ -585,29 +1021,22 @@ export default function MapPage() {
 
     const candidates = stations
       .map((station) => {
-        const distance =
-          currentLat !== undefined &&
-          currentLon !== undefined
-            ? haversineKm(
-                currentLat,
-                currentLon,
-                station.latitude!,
-                station.longitude!,
-              )
-            : station.distance_km ?? null;
+        // Prefer the backend-provided distance.
+        const distance: number | null =
+          isNum(station.distance_km)
+            ? station.distance_km
+            : currentLat !== undefined &&
+                currentLon !== undefined
+              ? haversineKm(
+                  currentLat,
+                  currentLon,
+                  station.latitude,
+                  station.longitude,
+                )
+              : null;
 
-        const power = getPower(station);
-        const available =
-          getAvailableChargers(station);
-
-        const total =
-          getTotalChargers(station);
-
-        const price =
-          getPrice(station);
-
-        const wait =
-          getWait(station);
+        const availability =
+          getAvailability(station);
 
         const reachable =
           distance === null
@@ -617,11 +1046,15 @@ export default function MapPage() {
         return {
           station,
           distance,
-          power,
-          available,
-          total,
-          price,
-          wait,
+          power: getPower(station),
+          available:
+            availability?.available ?? null,
+          total: availability?.total ?? null,
+          price: getPrice(station),
+          wait: getWait(station),
+          rating: getRating(station),
+          reliability: getReliability(station),
+          green: getGreen(station),
           reachable,
         };
       })
@@ -634,23 +1067,31 @@ export default function MapPage() {
           return false;
         }
 
+        // Unknown power is never treated as high power, so it
+        // cannot satisfy an explicit minimum-power requirement.
         if (
-          candidate.power <
-          preferences.minPowerKw
+          preferences.minPowerKw > 0 &&
+          (candidate.power === null ||
+            candidate.power <
+              preferences.minPowerKw)
         ) {
           return false;
         }
 
+        // Unknown price is NOT treated as ₹0 and is not removed
+        // by the max-price filter.
         if (
+          candidate.price !== null &&
           candidate.price >
-          preferences.maxPricePerKwh
+            preferences.maxPricePerKwh
         ) {
           return false;
         }
 
         if (
           preferences.fastOnly &&
-          candidate.power < 50
+          (candidate.power === null ||
+            candidate.power < 50)
         ) {
           return false;
         }
@@ -669,70 +1110,88 @@ export default function MapPage() {
           value !== null,
       );
 
-    const waits = candidates.map(
-      (item) => item.wait,
-    );
+    const waits = candidates
+      .map((item) => item.wait)
+      .filter(
+        (value): value is number =>
+          value !== null,
+      );
 
-    const prices = candidates.map(
-      (item) => item.price,
-    );
+    const prices = candidates
+      .map((item) => item.price)
+      .filter(
+        (value): value is number =>
+          value !== null,
+      );
 
-    const powers = candidates.map(
-      (item) => item.power,
-    );
+    const powers = candidates
+      .map((item) => item.power)
+      .filter(
+        (value): value is number =>
+          value !== null,
+      );
 
-    const availability = candidates.map(
-      (item) => item.available,
-    );
+    const availability = candidates
+      .map((item) => item.available)
+      .filter(
+        (value): value is number =>
+          value !== null,
+      );
 
     const scored: ScoredStation[] =
       candidates.map((candidate) => {
-        const distanceScore =
-          candidate.distance === null
-            ? 0.5
-            : normalize(
-                candidate.distance,
-                Math.min(...distances),
-                Math.max(...distances),
-                true,
-              );
+        const distanceScore = scoreKnown(
+          candidate.distance,
+          distances,
+          true,
+        );
 
-        const waitScore =
-          normalize(
-            candidate.wait,
-            Math.min(...waits),
-            Math.max(...waits),
-            true,
-          );
+        const waitScore = scoreKnown(
+          candidate.wait,
+          waits,
+          true,
+        );
 
-        const priceScore =
-          normalize(
-            candidate.price,
-            Math.min(...prices),
-            Math.max(...prices),
-            true,
-          );
+        const priceScore = scoreKnown(
+          candidate.price,
+          prices,
+          true,
+        );
 
-        const powerScore =
-          normalize(
-            candidate.power,
-            Math.min(...powers),
-            Math.max(...powers),
-          );
+        const powerScore = scoreKnown(
+          candidate.power,
+          powers,
+        );
 
-        const availabilityScore =
-          normalize(
-            candidate.available,
-            Math.min(...availability),
-            Math.max(...availability),
-          );
+        const availabilityScore = scoreKnown(
+          candidate.available,
+          availability,
+        );
 
+        // Real rating first, then reliability, otherwise neutral.
         const ratingScore =
-          getRating(candidate.station) / 5;
+          candidate.rating !== null
+            ? candidate.rating / 5
+            : candidate.reliability !== null
+              ? Math.max(
+                  0,
+                  Math.min(
+                    1,
+                    candidate.reliability / 100,
+                  ),
+                )
+              : 0.5;
 
         const greenScore =
-          (candidate.station
-            .green_energy_percent ?? 30) / 100;
+          candidate.green !== null
+            ? Math.max(
+                0,
+                Math.min(
+                  1,
+                  candidate.green / 100,
+                ),
+              )
+            : 0.5;
 
         let score =
           distanceScore * 0.25 +
@@ -745,6 +1204,7 @@ export default function MapPage() {
 
         if (
           preferences.preferGreen &&
+          candidate.green !== null &&
           greenScore > 0.5
         ) {
           score += 0.05;
@@ -752,6 +1212,7 @@ export default function MapPage() {
 
         if (
           preferences.preferLowWait &&
+          candidate.wait !== null &&
           candidate.wait <= 5
         ) {
           score += 0.05;
@@ -763,39 +1224,54 @@ export default function MapPage() {
 
         const reasons: string[] = [];
 
-        if (candidate.reachable) {
+        if (
+          candidate.reachable &&
+          candidate.distance !== null
+        ) {
           reasons.push(
             "Reachable with current battery",
           );
         }
 
-        if (candidate.available > 0) {
+        if (
+          candidate.available !== null &&
+          candidate.available > 0
+        ) {
           reasons.push(
             `${candidate.available} charger(s) available`,
           );
         }
 
-        if (candidate.power >= 100) {
+        if (
+          candidate.power !== null &&
+          candidate.power >= 100
+        ) {
           reasons.push(
             "Fast charging available",
           );
         }
 
-        if (candidate.wait <= 5) {
+        if (
+          candidate.wait !== null &&
+          candidate.wait <= 5
+        ) {
           reasons.push(
             "Low predicted waiting time",
           );
         }
 
-        if (getRating(candidate.station) >= 4.5) {
+        if (
+          candidate.rating !== null &&
+          candidate.rating >= 4.5
+        ) {
           reasons.push(
             "Highly rated station",
           );
         }
 
         if (
-          (candidate.station
-            .green_energy_percent ?? 0) >= 50
+          candidate.green !== null &&
+          candidate.green >= 50
         ) {
           reasons.push(
             "High green-energy usage",
@@ -808,8 +1284,43 @@ export default function MapPage() {
           );
         }
 
+        // Explainability: which inputs were unknown and therefore
+        // scored neutrally.
+        const neutralFactors: string[] = [];
+
+        if (candidate.price === null) {
+          neutralFactors.push("price");
+        }
+
+        if (candidate.wait === null) {
+          neutralFactors.push("wait time");
+        }
+
+        if (candidate.power === null) {
+          neutralFactors.push("power");
+        }
+
+        if (candidate.available === null) {
+          neutralFactors.push("availability");
+        }
+
+        if (
+          candidate.rating === null &&
+          candidate.reliability === null
+        ) {
+          neutralFactors.push("rating");
+        }
+
+        if (candidate.green === null) {
+          neutralFactors.push("green energy");
+        }
+
         return {
           ...candidate.station,
+
+          station_key: getStationKey(
+            candidate.station,
+          ),
 
           calculated_distance_km:
             candidate.distance,
@@ -832,6 +1343,14 @@ export default function MapPage() {
 
           calculated_available:
             candidate.available,
+
+          calculated_total:
+            candidate.total,
+
+          calculated_rating:
+            candidate.rating,
+
+          neutral_factors: neutralFactors,
 
           reasons,
         };
@@ -871,6 +1390,9 @@ export default function MapPage() {
           .includes(query) ||
         station.city
           ?.toLowerCase()
+          .includes(query) ||
+        station.operator
+          ?.toLowerCase()
           .includes(query),
     );
   }, [scoredStations, search]);
@@ -882,8 +1404,14 @@ export default function MapPage() {
   const selectedStation =
     scoredStations.find(
       (station) =>
-        station.id === selectedStationId,
+        station.station_key ===
+        selectedStationKey,
     ) ?? filteredStations[0] ?? null;
+
+  const selectedConnectors =
+    selectedStation
+      ? getDisplayConnectors(selectedStation)
+      : [];
 
   /* ============================================================
      MAP CENTER
@@ -897,16 +1425,16 @@ export default function MapPage() {
         ]
       : selectedStation
         ? [
-            selectedStation.latitude!,
-            selectedStation.longitude!,
+            selectedStation.latitude,
+            selectedStation.longitude,
           ]
         : DEFAULT_LOCATION;
 
   const selectedPosition =
     selectedStation
       ? ([
-          selectedStation.latitude!,
-          selectedStation.longitude!,
+          selectedStation.latitude,
+          selectedStation.longitude,
         ] as [number, number])
       : null;
 
@@ -1351,17 +1879,17 @@ export default function MapPage() {
                       number,
                       number,
                     ] = [
-                      station.latitude!,
-                      station.longitude!,
+                      station.latitude,
+                      station.longitude,
                     ];
 
                     const isSelected =
-                      station.id ===
-                      selectedStationId;
+                      station.station_key ===
+                      selectedStation?.station_key;
 
                     return (
                       <CircleMarker
-                        key={station.id}
+                        key={station.station_key}
                         center={position}
                         radius={
                           isSelected
@@ -1382,8 +1910,8 @@ export default function MapPage() {
                         }}
                         eventHandlers={{
                           click: () =>
-                            setSelectedStationId(
-                              station.id,
+                            setSelectedStationKey(
+                              station.station_key,
                             ),
                         }}
                       >
@@ -1394,9 +1922,16 @@ export default function MapPage() {
                             </strong>
 
                             <p>
-                              {station.address ??
-                                station.city ??
+                              {station.address ||
+                                station.city ||
                                 "Charging station"}
+                            </p>
+
+                            <p>
+                              Source:{" "}
+                              {getSourceLabel(
+                                station,
+                              )}
                             </p>
 
                             <p>
@@ -1409,17 +1944,16 @@ export default function MapPage() {
 
                             <p>
                               Power:{" "}
-                              {
-                                station.calculated_power_kw
-                              }{" "}
-                              kW
+                              {formatPower(
+                                station.calculated_power_kw,
+                              )}
                             </p>
 
                             <p>
-                              Available:{" "}
-                              {
-                                station.calculated_available
-                              }
+                              {formatAvailability(
+                                station.calculated_available,
+                                station.calculated_total,
+                              )}
                             </p>
                           </div>
                         </Popup>
@@ -1509,7 +2043,8 @@ export default function MapPage() {
                   />
 
                   <p className="mt-3 text-sm font-semibold text-grid-200">
-                    No stations found
+                    No charging stations found in
+                    this area.
                   </p>
 
                   <p className="mt-1 text-xs text-grid-300">
@@ -1523,16 +2058,25 @@ export default function MapPage() {
               .slice(0, 8)
               .map((station, index) => {
                 const selected =
-                  station.id ===
-                  selectedStationId;
+                  station.station_key ===
+                  selectedStation?.station_key;
+
+                const connectorQuantity =
+                  getConnectorQuantity(station);
+
+                const showStatusChip =
+                  station.source !==
+                    "voltgrid" ||
+                  station.is_operational ===
+                    false;
 
                 return (
                   <button
-                    key={station.id}
+                    key={station.station_key}
                     type="button"
                     onClick={() => {
-                      setSelectedStationId(
-                        station.id,
+                      setSelectedStationKey(
+                        station.station_key,
                       );
                     }}
                     className={`w-full rounded-2xl border p-4 text-left transition ${
@@ -1561,10 +2105,17 @@ export default function MapPage() {
                           </h4>
 
                           <p className="mt-1 text-xs text-grid-300">
-                            {station.address ??
-                              station.city ??
+                            {station.address ||
+                              station.city ||
                               "EV charging station"}
                           </p>
+
+                          {station.operator && (
+                            <p className="mt-1 text-xs text-grid-400">
+                              Operator:{" "}
+                              {station.operator}
+                            </p>
+                          )}
                         </div>
                       </div>
 
@@ -1595,10 +2146,10 @@ export default function MapPage() {
                         </p>
 
                         <p className="mt-1 font-semibold text-grid-200">
-                          {
-                            station.calculated_wait_minutes
-                          }{" "}
-                          min
+                          {station.calculated_wait_minutes !==
+                          null
+                            ? `${station.calculated_wait_minutes} min`
+                            : "Unavailable"}
                         </p>
                       </div>
 
@@ -1607,16 +2158,19 @@ export default function MapPage() {
                           Power
                         </p>
 
-                        <p className="mt-1 font-semibold text-grid-200">
-                          {
-                            station.calculated_power_kw
-                          }{" "}
-                          kW
+                        <p className="mt-1 break-words font-semibold text-grid-200">
+                          {formatPower(
+                            station.calculated_power_kw,
+                          )}
                         </p>
                       </div>
                     </div>
 
                     <div className="mt-3 flex flex-wrap gap-2">
+                      <SourceBadge
+                        station={station}
+                      />
+
                       {station.reachable && (
                         <span className="flex items-center gap-1 rounded-full bg-volt-500/10 px-2 py-1 text-[11px] text-volt-300">
                           <CheckCircle2
@@ -1626,56 +2180,86 @@ export default function MapPage() {
                         </span>
                       )}
 
-                      {station.calculated_available >
-                        0 && (
-                        <span className="rounded-full bg-blue-500/10 px-2 py-1 text-[11px] text-blue-300">
-                          {
-                            station.calculated_available
-                          }{" "}
-                          available
+                      {station.calculated_available !==
+                        null &&
+                        station.calculated_total !==
+                          null && (
+                          <span
+                            className={`rounded-full px-2 py-1 text-[11px] ${
+                              station.calculated_available >
+                              0
+                                ? "bg-blue-500/10 text-blue-300"
+                                : "bg-grid-800 text-grid-300"
+                            }`}
+                          >
+                            {formatAvailability(
+                              station.calculated_available,
+                              station.calculated_total,
+                            )}
+                          </span>
+                        )}
+
+                      {connectorQuantity !==
+                        null && (
+                        <span className="rounded-full bg-grid-800 px-2 py-1 text-[11px] text-grid-300">
+                          {connectorQuantity}{" "}
+                          {connectorQuantity ===
+                          1
+                            ? "connector"
+                            : "connectors"}
+                        </span>
+                      )}
+
+                      {showStatusChip && (
+                        <span
+                          className={`rounded-full px-2 py-1 text-[11px] ${
+                            station.is_operational ===
+                            false
+                              ? "bg-red-500/10 text-red-300"
+                              : "bg-grid-800 text-grid-300"
+                          }`}
+                        >
+                          {getStatusLabel(
+                            station,
+                          )}
                         </span>
                       )}
 
                       <span className="rounded-full bg-grid-800 px-2 py-1 text-[11px] text-grid-300">
-                        ₹
-                        {station.calculated_price.toFixed(
-                          2,
+                        {formatPrice(
+                          station.calculated_price,
                         )}
-                        /kWh
                       </span>
                     </div>
 
-                    <div className="mt-3 flex items-center justify-between border-t border-grid-800 pt-3">
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-grid-800 pt-3">
                       <span className="flex items-center gap-1 text-xs text-grid-400">
                         <Star
                           size={13}
                           className="text-yellow-400"
                         />
-                        {getRating(
+                        {formatRating(
                           station,
-                        ).toFixed(1)}
+                        )}
                       </span>
 
                       <span className="flex items-center gap-1 text-xs text-grid-400">
                         <Clock3
                           size={13}
                         />
-                        {
-                          station.calculated_wait_minutes
-                        }{" "}
-                        min
+                        {station.calculated_wait_minutes !==
+                        null
+                          ? `${station.calculated_wait_minutes} min`
+                          : "Wait time unavailable"}
                       </span>
 
                       <span className="flex items-center gap-1 text-xs text-grid-400">
                         <PlugZap
                           size={13}
                         />
-                        {
-                          station.calculated_available
-                        }
-                        /
-                        {getTotalChargers(
-                          station,
+                        {formatAvailability(
+                          station.calculated_available,
+                          station.calculated_total,
                         )}
                       </span>
                     </div>
@@ -1698,13 +2282,19 @@ export default function MapPage() {
                   </span>
                 </div>
 
-                <h3 className="mt-2 font-display text-xl font-bold text-grid-50">
-                  {selectedStation.name}
-                </h3>
+                <div className="mt-2 flex flex-wrap items-center gap-3">
+                  <h3 className="font-display text-xl font-bold text-grid-50">
+                    {selectedStation.name}
+                  </h3>
+
+                  <SourceBadge
+                    station={selectedStation}
+                  />
+                </div>
 
                 <p className="mt-1 text-sm text-grid-400">
-                  {selectedStation.address ??
-                    selectedStation.city ??
+                  {selectedStation.address ||
+                    selectedStation.city ||
                     "Charging station"}
                 </p>
 
@@ -1723,6 +2313,194 @@ export default function MapPage() {
                     ),
                   )}
                 </div>
+
+                {/* STATION DETAILS */}
+                <div className="mt-5 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                  <DetailTile
+                    label="Source"
+                    value={getSourceLabel(
+                      selectedStation,
+                    )}
+                  />
+
+                  <DetailTile
+                    label="Distance"
+                    value={
+                      selectedStation.calculated_distance_km !==
+                      null
+                        ? `${selectedStation.calculated_distance_km.toFixed(
+                            1,
+                          )} km`
+                        : "Distance unavailable"
+                    }
+                  />
+
+                  {selectedStation.operator && (
+                    <DetailTile
+                      label="Operator"
+                      value={
+                        selectedStation.operator
+                      }
+                    />
+                  )}
+
+                  <DetailTile
+                    label="Operational status"
+                    value={getStatusLabel(
+                      selectedStation,
+                    )}
+                  />
+
+                  <DetailTile
+                    label="Live availability"
+                    value={formatAvailability(
+                      selectedStation.calculated_available,
+                      selectedStation.calculated_total,
+                    )}
+                  />
+
+                  <DetailTile
+                    label="Power"
+                    value={formatPower(
+                      selectedStation.calculated_power_kw,
+                    )}
+                  />
+
+                  <DetailTile
+                    label="Price"
+                    value={formatPrice(
+                      selectedStation.calculated_price,
+                    )}
+                  />
+
+                  <DetailTile
+                    label="Wait time"
+                    value={
+                      selectedStation.calculated_wait_minutes !==
+                      null
+                        ? `${selectedStation.calculated_wait_minutes} min`
+                        : "Wait time unavailable"
+                    }
+                  />
+
+                  <DetailTile
+                    label="Rating"
+                    value={
+                      selectedStation.calculated_rating !==
+                      null
+                        ? `${selectedStation.calculated_rating.toFixed(
+                            1,
+                          )} / 5`
+                        : "Rating unavailable"
+                    }
+                  />
+
+                  {getReliability(
+                    selectedStation,
+                  ) !== null && (
+                    <DetailTile
+                      label="Reliability"
+                      value={`${Math.round(
+                        getReliability(
+                          selectedStation,
+                        ) as number,
+                      )}%`}
+                    />
+                  )}
+
+                  <DetailTile
+                    label="Green energy"
+                    value={
+                      getGreen(selectedStation) !==
+                      null
+                        ? `${Math.round(
+                            getGreen(
+                              selectedStation,
+                            ) as number,
+                          )}%`
+                        : "Green energy data unavailable"
+                    }
+                  />
+
+                  {(selectedStation.usage_type ||
+                    isBoolean(
+                      selectedStation.is_pay_at_location,
+                    ) ||
+                    isBoolean(
+                      selectedStation.is_membership_required,
+                    )) && (
+                    <DetailTile
+                      label="Access"
+                      value={[
+                        selectedStation.usage_type,
+                        selectedStation.is_pay_at_location ===
+                        true
+                          ? "Pay at location"
+                          : null,
+                        selectedStation.is_membership_required ===
+                        true
+                          ? "Membership required"
+                          : selectedStation.is_membership_required ===
+                              false
+                            ? "No membership required"
+                            : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" • ")}
+                    />
+                  )}
+                </div>
+
+                {/* CONNECTORS */}
+                {selectedConnectors.length >
+                  0 && (
+                  <div className="mt-4">
+                    <p className="text-xs font-medium text-grid-400">
+                      Connectors
+                    </p>
+
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {selectedConnectors.map(
+                        (connector) => (
+                          <span
+                            key={connector.key}
+                            className="flex items-center gap-1 rounded-full bg-grid-800 px-3 py-1.5 text-xs text-grid-200"
+                          >
+                            <PlugZap
+                              size={13}
+                              className="text-volt-400"
+                            />
+
+                            <span className="font-semibold">
+                              {connector.title}
+                            </span>
+
+                            {connector.details
+                              .length > 0 && (
+                              <span className="text-grid-300">
+                                {connector.details.join(
+                                  " • ",
+                                )}
+                              </span>
+                            )}
+                          </span>
+                        ),
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {selectedStation.neutral_factors
+                  .length > 0 && (
+                  <p className="mt-4 text-xs text-grid-300">
+                    Data unavailable, scored
+                    neutrally:{" "}
+                    {selectedStation.neutral_factors.join(
+                      ", ",
+                    )}
+                    .
+                  </p>
+                )}
               </div>
 
               <div className="flex items-center border-t border-grid-800 p-6 lg:border-l lg:border-t-0">
@@ -1738,6 +2516,28 @@ export default function MapPage() {
                   <p className="text-xs text-grid-300">
                     / 100
                   </p>
+                  {selectedStation.source === "voltgrid" &&
+  selectedStation.id != null && (
+    <Link
+      to={`/booking/${selectedStation.id}`}
+      className="mt-5 flex w-full min-w-[190px] items-center justify-center gap-2 rounded-xl bg-volt-500 px-5 py-3 text-sm font-semibold text-grid-950 transition hover:bg-volt-400"
+    >
+      <PlugZap size={17} />
+      Book this charger
+    </Link>
+  )}
+
+{selectedStation.source === "openchargemap" && (
+  <div className="mt-5 w-full min-w-[190px] rounded-xl border border-grid-700 bg-grid-950/60 px-4 py-3 text-center">
+    <p className="text-xs font-medium text-grid-300">
+      External station
+    </p>
+
+    <p className="mt-1 text-[11px] text-grid-400">
+      Booking is not available through VoltGrid
+    </p>
+  </div>
+)}
                 </div>
               </div>
             </div>
@@ -1861,4 +2661,8 @@ export default function MapPage() {
       </div>
     </AppShell>
   );
+}
+
+function isBoolean(value: unknown): value is boolean {
+  return typeof value === "boolean";
 }

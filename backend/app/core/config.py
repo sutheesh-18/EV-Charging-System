@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # ML
     ML_MODELS_DIR: str = "app/ml/saved_models"
 
+    # Open Charge Map
+    OPENCHARGE_MAP_API_KEY: str = "6d277e59-9903-401e-b8ae-0e326e102759"
+
     # Rate limiting
     RATE_LIMIT: str = "100/minute"
 
