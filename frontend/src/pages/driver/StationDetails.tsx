@@ -312,7 +312,7 @@ export default function StationDetails() {
                 </button>
 
                 <Link
-                  to={`/stations/${station.id}/book`}
+                  to={`/booking/${station.id}`}
                   className={`btn-primary ${
                     availableCount === 0
                       ? "pointer-events-none opacity-50"
@@ -864,7 +864,7 @@ export default function StationDetails() {
             </div>
 
             <Link
-              to={`/stations/${station.id}/book`}
+              to={`/booking/${station.id}`}
               className={`btn-primary ${
                 availableCount === 0
                   ? "pointer-events-none opacity-50"

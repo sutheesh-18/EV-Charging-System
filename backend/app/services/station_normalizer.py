@@ -1,9 +1,109 @@
+
 """
 Normalize Open Charge Map station data into a clean VoltGrid format.
 """
 
-from math import asin, cos, radians, sin, sqrt
+import re
+from math import asin, cos, isfinite, radians, sin, sqrt
 from typing import Any
+from urllib.parse import urlparse
+
+
+def validate_http_url(value: Any) -> str | None:
+    """
+    Return a valid HTTP/HTTPS URL or None.
+
+    URL validation does not guarantee that the URL exists
+    or provides a booking facility.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    url = value.strip()
+
+    try:
+        parsed = urlparse(url)
+
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.hostname
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return None
+
+        # Validate the port format, if provided.
+        _ = parsed.port
+
+        return url
+
+    except (ValueError, AttributeError):
+        return None
+
+
+def to_float(value: Any) -> float | None:
+    """Safely convert a value to a finite float."""
+    if value is None or isinstance(value, bool):
+        return None
+
+    try:
+        result = float(value)
+        return result if isfinite(result) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def to_int(value: Any) -> int | None:
+    """Safely convert a value to an integer."""
+    if value is None or isinstance(value, bool):
+        return None
+
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def parse_usage_cost(value: Any) -> float | None:
+    """
+    Extract a numeric price per kWh from Open Charge Map UsageCost.
+
+    Examples:
+        '21/kWh'       -> 21.0
+        '14.99/kWh'    -> 14.99
+        '₹21/kWh'      -> 21.0
+        '21 per kWh'   -> 21.0
+
+    Unknown or ambiguous formats return None.
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return to_float(value)
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    text = value.strip().replace(",", "")
+
+    # Only accept a value explicitly expressed per kWh.
+    if not re.search(
+        r"(?:/|per\s*)\s*kwh\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return None
+
+    match = re.search(r"\d+(?:\.\d+)?", text)
+
+    if not match:
+        return None
+
+    price = to_float(match.group(0))
+
+    if price is None or price < 0:
+        return None
+
+    return round(price, 2)
 
 
 def haversine_km(
@@ -16,7 +116,6 @@ def haversine_km(
     Calculate the distance between two geographic coordinates
     using the Haversine formula.
     """
-
     earth_radius_km = 6371.0
 
     lat1_rad = radians(lat1)
@@ -32,6 +131,9 @@ def haversine_km(
         * sin(delta_lon / 2) ** 2
     )
 
+    # Protect against floating-point rounding outside [0, 1].
+    a = max(0.0, min(1.0, a))
+
     c = 2 * asin(sqrt(a))
 
     return earth_radius_km * c
@@ -43,8 +145,8 @@ def normalize_ocm_station(
     search_longitude: float | None = None,
 ) -> dict[str, Any]:
     """
-    Convert one Open Charge Map station into the
-    clean VoltGrid format.
+    Convert one Open Charge Map station into the clean VoltGrid
+    format, including price, connector and external URL information.
     """
 
     address_info = station.get("AddressInfo") or {}
@@ -53,10 +155,10 @@ def normalize_ocm_station(
     usage_info = station.get("UsageType") or {}
 
     # --------------------------------------------------------
-    # Basic station information
+    # BASIC STATION INFORMATION
     # --------------------------------------------------------
 
-    station_id = station.get("ID")
+    station_id = to_int(station.get("ID"))
 
     name = (
         address_info.get("Title")
@@ -74,54 +176,93 @@ def normalize_ocm_station(
     address = ", ".join(
         str(part).strip()
         for part in address_parts
-        if part
+        if part and str(part).strip()
     )
-
-    # --------------------------------------------------------
-    # Operator
-    # --------------------------------------------------------
 
     operator = operator_info.get("Title")
 
     # --------------------------------------------------------
-    # Location
+    # EXTERNAL BOOKING AND WEBSITE URLS
     # --------------------------------------------------------
 
-    latitude = address_info.get("Latitude")
-    longitude = address_info.get("Longitude")
+    # Only use actual URLs supplied by the provider.
+    # Do not invent a booking URL.
+
+    booking_url = validate_http_url(
+        operator_info.get("BookingURL")
+        or station.get("BookingURL")
+    )
+
+    operator_website_url = validate_http_url(
+        operator_info.get("WebsiteURL")
+    )
+
+    station_info_url = validate_http_url(
+        address_info.get("RelatedURL")
+        or operator_info.get("RelatedURL")
+    )
+
+    # Informational page, not a guaranteed booking facility.
+
+    openchargemap_url = None
+
+    if station_id is not None:
+        openchargemap_url = (
+            "https://openchargemap.org/site/poi/details/"
+            f"{station_id}"
+        )
 
     # --------------------------------------------------------
-    # Calculate distance ourselves
+    # LOCATION
+    # --------------------------------------------------------
+
+    latitude = to_float(address_info.get("Latitude"))
+    longitude = to_float(address_info.get("Longitude"))
+
+    # Reject invalid geographic coordinates.
+
+    if (
+        latitude is not None
+        and not -90 <= latitude <= 90
+    ):
+        latitude = None
+
+    if (
+        longitude is not None
+        and not -180 <= longitude <= 180
+    ):
+        longitude = None
+
+    # --------------------------------------------------------
+    # DISTANCE
     # --------------------------------------------------------
 
     distance_km = None
 
+    search_lat = to_float(search_latitude)
+    search_lon = to_float(search_longitude)
+
     if (
         latitude is not None
         and longitude is not None
-        and search_latitude is not None
-        and search_longitude is not None
+        and search_lat is not None
+        and search_lon is not None
     ):
-        try:
-            distance_km = round(
-                haversine_km(
-                    search_latitude,
-                    search_longitude,
-                    float(latitude),
-                    float(longitude),
-                ),
-                2,
-            )
-        except (TypeError, ValueError):
-            distance_km = None
+        distance_km = round(
+            haversine_km(
+                search_lat,
+                search_lon,
+                latitude,
+                longitude,
+            ),
+            2,
+        )
 
     # --------------------------------------------------------
-    # Operational status
+    # OPERATIONAL STATUS
     # --------------------------------------------------------
 
-    is_operational = status_info.get(
-        "IsOperational"
-    )
+    is_operational = status_info.get("IsOperational")
 
     status = (
         status_info.get("Title")
@@ -129,7 +270,7 @@ def normalize_ocm_station(
     )
 
     # --------------------------------------------------------
-    # Usage / payment information
+    # USAGE AND PAYMENT INFORMATION
     # --------------------------------------------------------
 
     usage_type = usage_info.get("Title")
@@ -143,62 +284,96 @@ def normalize_ocm_station(
     )
 
     # --------------------------------------------------------
-    # Connector information
+    # PRICE INFORMATION
     # --------------------------------------------------------
 
-    normalized_connectors = []
+    # Open Charge Map provides this as a string in some records.
+    # Example: "21/kWh" or "14.99/kWh".
+
+    charging_cost_per_kwh = parse_usage_cost(
+        station.get("UsageCost")
+    )
+
+    # --------------------------------------------------------
+    # CONNECTOR INFORMATION
+    # --------------------------------------------------------
+
+    normalized_connectors: list[dict[str, Any]] = []
 
     connections = station.get("Connections") or []
 
-    for connection in connections:
+    if isinstance(connections, list):
+        for connection in connections:
+            if not isinstance(connection, dict):
+                continue
 
-        connection_type = (
-            connection.get("ConnectionType")
-            or {}
-        )
+            connection_type = (
+                connection.get("ConnectionType") or {}
+            )
 
-        level = (
-            connection.get("Level")
-            or {}
-        )
+            level = (
+                connection.get("Level") or {}
+            )
 
-        connector_status = (
-            connection.get("StatusType")
-            or {}
-        )
+            connector_status = (
+                connection.get("StatusType") or {}
+            )
 
-        power_kw = connection.get("PowerKW")
+            if not isinstance(connection_type, dict):
+                connection_type = {}
 
-        if power_kw is not None:
-            try:
-                power_kw = float(power_kw)
-            except (TypeError, ValueError):
-                power_kw = None
+            if not isinstance(level, dict):
+                level = {}
 
-        normalized_connectors.append(
-            {
-                "type": (
-                    connection_type.get("Title")
-                    or "Unknown"
-                ),
-                "power_kw": power_kw,
-                "amps": connection.get("Amps"),
-                "voltage": connection.get("Voltage"),
-                "level": level.get("Title"),
-                "quantity": connection.get("Quantity"),
-                "status": connector_status.get("Title"),
-            }
-        )
+            if not isinstance(connector_status, dict):
+                connector_status = {}
+
+            power_kw = to_float(
+                connection.get("PowerKW")
+            )
+
+            quantity = to_int(
+                connection.get("Quantity")
+            )
+
+            amps = to_float(
+                connection.get("Amps")
+            )
+
+            voltage = to_float(
+                connection.get("Voltage")
+            )
+
+            normalized_connectors.append(
+                {
+                    "type": (
+                        connection_type.get("Title")
+                        or "Connector type not provided"
+                    ),
+                    "power_kw": power_kw,
+                    "amps": amps,
+                    "voltage": voltage,
+                    "level": level.get("Title"),
+                    "quantity": quantity,
+                    "status": (
+                        connector_status.get("Title")
+                        or "Status not provided"
+                    ),
+                }
+            )
 
     # --------------------------------------------------------
-    # Return clean VoltGrid object
+    # RETURN NORMALIZED VOLTGRID OBJECT
     # --------------------------------------------------------
 
     return {
         "source": "openchargemap",
+        "id": None,
         "external_id": station_id,
+
         "name": name,
         "operator": operator,
+
         "address": address,
         "city": address_info.get("Town"),
         "state": address_info.get("StateOrProvince"),
@@ -206,15 +381,35 @@ def normalize_ocm_station(
         "country": (
             (address_info.get("Country") or {}).get("Title")
         ),
+
         "latitude": latitude,
         "longitude": longitude,
         "distance_km": distance_km,
+
         "status": status,
         "is_operational": is_operational,
+
         "usage_type": usage_type,
         "is_pay_at_location": is_pay_at_location,
         "is_membership_required": is_membership_required,
+
+        # Price is populated only when the source supplies a
+        # recognizable per-kWh value.
+        "charging_cost_per_kwh": charging_cost_per_kwh,
+        "price_per_kwh": charging_cost_per_kwh,
+
+        # Open Charge Map connector data is not live availability.
+        # Never calculate free chargers from connector status.
+        "available_chargers": None,
+        "total_chargers": None,
+
         "connectors": normalized_connectors,
+
+        # External links
+        "booking_url": booking_url,
+        "operator_website_url": operator_website_url,
+        "station_info_url": station_info_url,
+        "openchargemap_url": openchargemap_url,
     }
 
 
@@ -227,9 +422,12 @@ def normalize_ocm_stations(
     Normalize multiple Open Charge Map stations.
     """
 
-    normalized = []
+    normalized: list[dict[str, Any]] = []
 
     for station in stations:
+        if not isinstance(station, dict):
+            continue
+
         try:
             normalized_station = normalize_ocm_station(
                 station,
@@ -237,20 +435,26 @@ def normalize_ocm_stations(
                 search_longitude=search_longitude,
             )
 
-            normalized.append(
-                normalized_station
-            )
+            # A station without valid coordinates cannot be placed
+            # on the MapPage map, so do not return it as mappable.
+            if (
+                normalized_station["latitude"] is None
+                or normalized_station["longitude"] is None
+            ):
+                continue
 
-        except Exception:
-            # Ignore malformed individual records
-            # instead of breaking the complete response.
+            normalized.append(normalized_station)
+
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            # One malformed provider record must not interrupt
+            # the processing of the remaining stations.
             continue
 
-    # Sort nearest stations first
+    # Sort nearest stations first.
     normalized.sort(
-        key=lambda station: (
-            station["distance_km"]
-            if station["distance_km"] is not None
+        key=lambda item: (
+            item["distance_km"]
+            if item["distance_km"] is not None
             else float("inf")
         )
     )

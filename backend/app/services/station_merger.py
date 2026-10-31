@@ -1,22 +1,22 @@
+
 """
 Merge VoltGrid database stations with Open Charge Map stations.
 
-The goal is to present one unified station list while avoiding
-duplicate physical locations.
+VoltGrid stations remain the primary records.
+External information is added to matching VoltGrid stations
+without overwriting VoltGrid's live data or booking identity.
 """
 
+from math import cos, radians, sqrt
 from typing import Any
 
 
 def _normalize_text(value: Any) -> str:
-    """Normalize text for simple comparison."""
-
+    """Normalize text for comparison."""
     if value is None:
         return ""
 
-    return " ".join(
-        str(value).lower().strip().split()
-    )
+    return " ".join(str(value).lower().strip().split())
 
 
 def _distance_between_points(
@@ -25,139 +25,126 @@ def _distance_between_points(
     lat2: float,
     lon2: float,
 ) -> float:
-    """
-    Approximate geographic distance in kilometers.
+    """Calculate approximate geographic distance in kilometers."""
 
-    Uses a local approximation suitable for duplicate detection.
-    """
+    mean_latitude = radians((lat1 + lat2) / 2)
 
-    from math import cos, radians, sqrt
-
-    mean_latitude = radians(
-        (lat1 + lat2) / 2
-    )
-
-    lat_distance = (
-        lat2 - lat1
-    ) * 111.0
-
+    lat_distance = (lat2 - lat1) * 111.0
     lon_distance = (
-        lon2 - lon1
-    ) * 111.0 * cos(mean_latitude)
-
-    return sqrt(
-        lat_distance ** 2
-        + lon_distance ** 2
+        (lon2 - lon1) * 111.0 * cos(mean_latitude)
     )
+
+    return sqrt(lat_distance ** 2 + lon_distance ** 2)
+
+
+def _text_matches(value1: Any, value2: Any) -> bool:
+    """Check whether two non-empty text values are similar."""
+
+    text1 = _normalize_text(value1)
+    text2 = _normalize_text(value2)
+
+    if not text1 or not text2:
+        return False
+
+    return text1 == text2 or text1 in text2 or text2 in text1
 
 
 def _is_same_physical_station(
     voltgrid_station: dict[str, Any],
     external_station: dict[str, Any],
 ) -> bool:
-    """
-    Determine whether two station records probably represent
-    the same physical charging location.
-
-    We primarily use geographic proximity and then use
-    name/operator/address similarity as supporting evidence.
-    """
-
-    vg_lat = voltgrid_station.get("latitude")
-    vg_lon = voltgrid_station.get("longitude")
-
-    ext_lat = external_station.get("latitude")
-    ext_lon = external_station.get("longitude")
-
-    if (
-        vg_lat is None
-        or vg_lon is None
-        or ext_lat is None
-        or ext_lon is None
-    ):
-        return False
+    """Identify probable duplicate physical station records."""
 
     try:
-        distance = _distance_between_points(
-            float(vg_lat),
-            float(vg_lon),
-            float(ext_lat),
-            float(ext_lon),
-        )
-    except (TypeError, ValueError):
+        vg_lat = float(voltgrid_station["latitude"])
+        vg_lon = float(voltgrid_station["longitude"])
+        ext_lat = float(external_station["latitude"])
+        ext_lon = float(external_station["longitude"])
+    except (KeyError, TypeError, ValueError):
         return False
 
-    # Very close coordinates strongly suggest the same
-    # physical station.
-    if distance <= 0.10:
+    distance = _distance_between_points(
+        vg_lat, vg_lon, ext_lat, ext_lon
+    )
+
+    # Do not merge stations that are more than 500 metres apart.
+    if distance > 0.50:
+        return False
+
+    name_match = _text_matches(
+        voltgrid_station.get("name"),
+        external_station.get("name"),
+    )
+
+    operator_match = _text_matches(
+        voltgrid_station.get("operator"),
+        external_station.get("operator"),
+    )
+
+    address_match = _text_matches(
+        voltgrid_station.get("address"),
+        external_station.get("address"),
+    )
+
+    # Strong identifying evidence.
+    if name_match and (operator_match or address_match):
         return True
 
-    # For slightly larger coordinate differences, compare
-    # identifying text.
-    vg_name = _normalize_text(
-        voltgrid_station.get("name")
-    )
-
-    ext_name = _normalize_text(
-        external_station.get("name")
-    )
-
-    vg_operator = _normalize_text(
-        voltgrid_station.get("operator")
-    )
-
-    ext_operator = _normalize_text(
-        external_station.get("operator")
-    )
-
-    vg_address = _normalize_text(
-        voltgrid_station.get("address")
-    )
-
-    ext_address = _normalize_text(
-        external_station.get("address")
-    )
-
-    name_match = (
-        bool(vg_name)
-        and bool(ext_name)
-        and (
-            vg_name in ext_name
-            or ext_name in vg_name
-        )
-    )
-
-    operator_match = (
-        bool(vg_operator)
-        and bool(ext_operator)
-        and (
-            vg_operator in ext_operator
-            or ext_operator in vg_operator
-        )
-    )
-
-    address_match = (
-        bool(vg_address)
-        and bool(ext_address)
-        and (
-            vg_address in ext_address
-            or ext_address in vg_address
-        )
-    )
-
-    # Within 500 meters, strong identifying information can
-    # indicate the same physical station.
-    if distance <= 0.50:
-        if name_match and (
-            operator_match
-            or address_match
-        ):
-            return True
-
-        if address_match:
-            return True
+    # Very close coordinates still need some matching identity evidence.
+    if distance <= 0.05 and (
+        name_match or operator_match or address_match
+    ):
+        return True
 
     return False
+
+
+def _has_value(value: Any) -> bool:
+    """Return False for missing values without treating False or 0 as missing."""
+
+    return value is not None and value != "" and value != []
+
+
+def _merge_external_metadata(
+    voltgrid_station: dict[str, Any],
+    external_station: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Supplement a VoltGrid record with missing external information.
+
+    Never overwrite VoltGrid live availability, station ID,
+    coordinates, or internal booking identity.
+    """
+
+    external_fields = [
+    "external_id",
+    "operator",
+    "charging_cost_per_kwh",
+    "price_per_kwh",
+    "connectors",
+    "booking_url",
+    "operator_website_url",
+    "station_info_url",
+    "openchargemap_url",
+    "usage_type",
+    "is_pay_at_location",
+    "is_membership_required",
+]
+
+    for field in external_fields:
+        current_value = voltgrid_station.get(field)
+        external_value = external_station.get(field)
+
+        if (
+            not _has_value(current_value)
+            and _has_value(external_value)
+        ):
+            voltgrid_station[field] = external_value
+
+    # Keep VoltGrid as the primary record.
+    voltgrid_station["source"] = "voltgrid"
+
+    return voltgrid_station
 
 
 def merge_station_sources(
@@ -165,58 +152,58 @@ def merge_station_sources(
     external_stations: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """
-    Merge VoltGrid and Open Charge Map stations.
+    Merge VoltGrid and Open Charge Map station records.
 
-    VoltGrid stations are kept as the primary records.
-    External stations are added only when they do not
-    appear to duplicate an existing VoltGrid station.
+    Matching stations:
+        Keep VoltGrid and supplement missing external metadata.
+
+    Non-matching external stations:
+        Add them as independent external stations.
     """
 
     merged: list[dict[str, Any]] = []
 
-    # --------------------------------------------------------
-    # Add VoltGrid stations first
-    # --------------------------------------------------------
+    # Create independent copies of VoltGrid records.
+    voltgrid_records = [
+        {
+            **station,
+            "source": "voltgrid",
+        }
+        for station in voltgrid_stations
+    ]
 
-    for station in voltgrid_stations:
-        merged.append(
-            {
-                **station,
-                "source": "voltgrid",
-            }
-        )
+    merged.extend(voltgrid_records)
 
-    # --------------------------------------------------------
-    # Add external stations if they are not duplicates
-    # --------------------------------------------------------
-
+    # Process external stations.
     for external_station in external_stations:
 
-        duplicate = False
+        matching_station = None
 
-        for voltgrid_station in voltgrid_stations:
-
+        for voltgrid_station in voltgrid_records:
             if _is_same_physical_station(
                 voltgrid_station,
                 external_station,
             ):
-                duplicate = True
+                matching_station = voltgrid_station
                 break
 
-        if duplicate:
-            continue
+        if matching_station is not None:
+            # Preserve VoltGrid while supplementing external information.
+            _merge_external_metadata(
+                matching_station,
+                external_station,
+            )
+        else:
+            # Add independent OCM station.
+            merged.append({
+                **external_station,
+                "source": "openchargemap",
+            })
 
-        merged.append(
-            external_station
-        )
-
-    # --------------------------------------------------------
-    # Sort by distance
-    # --------------------------------------------------------
-
+    # Sort all stations by distance.
     merged.sort(
         key=lambda station: (
-            station.get("distance_km")
+            float(station["distance_km"])
             if station.get("distance_km") is not None
             else float("inf")
         )

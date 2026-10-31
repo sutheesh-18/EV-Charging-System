@@ -46,3 +46,31 @@ async def get_nearby_stations(
         raise RuntimeError("Unexpected response from Open Charge Map.")
 
     return data
+
+async def get_station_by_id(external_id: int) -> dict[str, Any] | None:
+    if external_id <= 0:
+        raise ValueError("Invalid Open Charge Map station ID.")
+
+    if not settings.OPENCHARGE_MAP_API_KEY:
+        raise RuntimeError("Open Charge Map API key is not configured.")
+
+    params = {
+        "key": settings.OPENCHARGE_MAP_API_KEY,
+        "ID": external_id,
+        "compact": "false",
+        "verbose": "false",
+    }
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.get(OCM_POI_URL, params=params)
+        response.raise_for_status()
+        data = response.json()
+
+    if not isinstance(data, list):
+        raise RuntimeError("Unexpected response from Open Charge Map.")
+
+    for station in data:
+        if isinstance(station, dict) and station.get("ID") == external_id:
+            return station
+
+    return None

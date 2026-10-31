@@ -69,6 +69,12 @@ interface Station {
 
   operator?: string | null;
 
+    // External station links
+  booking_url?: string | null;
+  operator_website_url?: string | null;
+  station_info_url?: string | null;
+  openchargemap_url?: string | null;
+
   total_chargers?: number | null;
   available_chargers?: number | null;
 
@@ -453,6 +459,31 @@ function formatAvailability(
   return available !== null && total !== null
     ? `${available} / ${total} available`
     : "Availability unavailable";
+}
+function getSafeExternalUrl(
+  value: unknown,
+): string | null {
+  if (
+    typeof value !== "string" ||
+    !value.trim()
+  ) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value.trim());
+
+    if (
+      !["https:", "http:"].includes(url.protocol) ||
+      !url.hostname
+    ) {
+      return null;
+    }
+
+    return url.href;
+  } catch {
+    return null;
+  }
 }
 
 function formatRating(station: ScoredStation): string {
@@ -1407,6 +1438,23 @@ export default function MapPage() {
         station.station_key ===
         selectedStationKey,
     ) ?? filteredStations[0] ?? null;
+
+    const externalBookingUrl = selectedStation
+  ? getSafeExternalUrl(selectedStation.booking_url)
+  : null;
+
+const externalWebsiteUrl = selectedStation
+  ? getSafeExternalUrl(
+      selectedStation.operator_website_url,
+    )
+  : null;
+
+const externalStationInfoUrl = selectedStation
+  ? (
+      getSafeExternalUrl(selectedStation.station_info_url) ??
+      getSafeExternalUrl(selectedStation.openchargemap_url)
+    )
+  : null;
 
   const selectedConnectors =
     selectedStation
@@ -2528,14 +2576,65 @@ export default function MapPage() {
   )}
 
 {selectedStation.source === "openchargemap" && (
-  <div className="mt-5 w-full min-w-[190px] rounded-xl border border-grid-700 bg-grid-950/60 px-4 py-3 text-center">
+  <div className="mt-5 w-full min-w-[190px] rounded-xl border border-grid-700 bg-grid-950/60 p-4 text-center">
     <p className="text-xs font-medium text-grid-300">
       External station
     </p>
 
-    <p className="mt-1 text-[11px] text-grid-400">
-      Booking is not available through VoltGrid
-    </p>
+    {externalBookingUrl ? (
+      <>
+        <a
+          href={externalBookingUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-volt-500 px-4 py-3 text-sm font-semibold text-grid-950 transition hover:bg-volt-400"
+        >
+          <PlugZap size={17} />
+          Book at operator
+        </a>
+
+        <p className="mt-2 text-[11px] text-grid-400">
+          Complete your reservation on the operator's website.
+        </p>
+      </>
+    ) : externalWebsiteUrl ? (
+      <>
+        <a
+          href={externalWebsiteUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-grid-600 px-4 py-3 text-sm font-semibold text-grid-100 transition hover:border-volt-400 hover:text-volt-300"
+        >
+          <Navigation size={17} />
+          Visit operator website
+        </a>
+
+        <p className="mt-2 text-[11px] text-grid-400">
+          Check the operator website for booking options.
+          VoltGrid cannot confirm an external reservation.
+        </p>
+      </>
+    ) : externalStationInfoUrl ? (
+      <>
+        <a
+          href={externalStationInfoUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-grid-600 px-4 py-3 text-sm font-semibold text-grid-100 transition hover:border-volt-400 hover:text-volt-300"
+        >
+          <MapPin size={17} />
+          View station information
+        </a>
+
+        <p className="mt-2 text-[11px] text-grid-400">
+          No direct operator booking link was provided.
+        </p>
+      </>
+    ) : (
+      <p className="mt-2 text-[11px] text-grid-400">
+        External booking link unavailable.
+      </p>
+    )}
   </div>
 )}
                 </div>

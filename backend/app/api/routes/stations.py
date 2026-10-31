@@ -1,3 +1,4 @@
+from app.services.booking.booking_service import booking_service
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -198,6 +199,64 @@ async def external_nearby_stations(
     )
 
     return normalized_stations
+
+
+
+# ============================================================
+# BOOKING OPTIONS
+# ============================================================
+
+@router.get("/booking-options")
+async def get_station_booking_options(
+    source: str = Query(...),
+    station_id: Optional[int] = Query(None),
+    external_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Get the appropriate booking method for a station.
+
+    Supports:
+    1. VoltGrid internal booking
+    2. Open Charge Map external booking links
+    """
+
+    if source not in ("voltgrid", "openchargemap"):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported station source."
+        )
+
+    try:
+        result = await booking_service.get_booking_options(
+            source=source,
+            station_id=station_id,
+            external_id=external_id,
+            db=db,
+        )
+
+        if result is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Station not found."
+            )
+
+        return result
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc)
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to retrieve booking options."
+        )
 
 
 # ============================================================

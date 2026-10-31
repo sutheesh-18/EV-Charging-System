@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 from datetime import datetime
 
@@ -70,34 +70,48 @@ class StationNearby(BaseModel):
 class UnifiedStation(BaseModel):
     source: str
 
+    # Station identification
     id: int | None = None
     external_id: int | None = None
 
+    # Basic station information
     name: str
     address: str
+    city: str | None = None
 
     latitude: float
     longitude: float
-
     distance_km: float | None = None
 
+    # Operator information
     operator: str | None = None
 
+    # External station links
+    booking_url: str | None = None
+    operator_website_url: str | None = None
+    station_info_url: str | None = None
+    openchargemap_url: str | None = None
+
+    # Charger information
     available_chargers: int | None = None
     total_chargers: int | None = None
 
+    # Pricing
     charging_cost_per_kwh: float | None = None
-    reliability_score: float | None = None
+    price_per_kwh: float | None = None
 
+    # Station performance
+    reliability_score: float | None = None
     status: str | None = None
     is_operational: bool | None = None
 
+    # Usage and payment information
     usage_type: str | None = None
     is_pay_at_location: bool | None = None
     is_membership_required: bool | None = None
 
-    connectors: list[dict] = [] 
-
+    # Connector information
+    connectors: list[dict] = Field(default_factory=list)
 
 class FeedbackCreate(BaseModel):
     station_id: int
