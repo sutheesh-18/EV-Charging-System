@@ -6,6 +6,10 @@ import "./index.css";
 import "./styles/voltgrid.css";
 import App from "./App";
 import { AuthProvider } from "./context/AuthContext";
+import { initTheme } from "./lib/theme";
+
+// Apply the saved (or device) light/dark theme before the first render
+initTheme();
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
