@@ -336,14 +336,19 @@ export default function PredictionsPage() {
     ...chartTheme.options,
     scales: {
       ...chartTheme.options.scales,
-      y: {
-        ...chartTheme.options.scales?.y,
-        suggestedMax: 3,
-        ticks: {
-          ...chartTheme.options.scales?.y?.ticks,
-          callback: (value) => Number(value).toFixed(0),
-        },
-      },
+     
+
+y: {
+  type: "linear",
+  min: 0,
+  max: 3,
+  ticks: {
+    stepSize: 1,
+    callback: (value: string | number) =>
+      Number(value).toFixed(0),
+  },
+},
+
     },
   };
 
