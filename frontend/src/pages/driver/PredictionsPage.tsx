@@ -339,7 +339,10 @@ export default function PredictionsPage() {
       y: {
         ...chartTheme.options.scales?.y,
         suggestedMax: 3,
-        ticks: { ...chartTheme.options.scales?.y?.ticks, precision: 0 },
+        ticks: {
+          ...chartTheme.options.scales?.y?.ticks,
+          callback: (value) => Number(value).toFixed(0),
+        },
       },
     },
   };
