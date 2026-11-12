@@ -1,24 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
 import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ElementType,
+  type ReactNode,
+} from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import {
+  AlertTriangle,
   ArrowRight,
   CalendarClock,
   CheckCircle2,
   Clock3,
   ExternalLink,
-  MapPin,
   QrCode,
   RefreshCw,
   TicketCheck,
+  X,
   XCircle,
   Zap,
-  X,
 } from "lucide-react";
 
 import AppShell from "../../components/layout/AppShell";
@@ -44,42 +47,65 @@ type BookingView = Omit<
   predicted_wait_minutes?: number | null;
 };
 
-/* ============================================================
-   THEME TOKENS (light first, dark: overrides)
-   Shared class strings so light/dark pairs live in one place.
-============================================================ */
+type StationLite = { id: number; name: string };
 
-const ui = {
-  title: "text-grid-900 dark:text-grid-50",
-  strong: "text-grid-800 dark:text-grid-100",
-  body: "text-grid-600 dark:text-grid-300",
-  muted: "text-grid-500 dark:text-grid-400",
-  label:
-    "text-xs font-bold uppercase tracking-wider text-grid-500 dark:text-grid-400",
-  accentText: "text-volt-700 dark:text-volt-300",
-  accentIcon: "text-volt-600 dark:text-volt-400",
-  accentTile:
-    "bg-volt-500/10 text-volt-600 dark:bg-volt-400/10 dark:text-volt-400",
-  border: "border-grid-200 dark:border-grid-700",
-  panel: "bg-white dark:bg-grid-900",
-  inset: "bg-grid-50 dark:bg-grid-900/40",
-  skeleton: "bg-grid-200 dark:bg-grid-800",
-  focus:
-    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-volt-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-volt-400 dark:focus-visible:ring-offset-grid-950",
+type VehicleLite = {
+  id: number;
+  name: string;
+  manufacturer: string;
+  model: string;
 };
 
 /* ============================================================
-   DATE HELPERS
+   SHARED STYLES (light + dark) - same tokens as the other pages
 ============================================================ */
+
+const CARD =
+  "rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-grid-700/70 dark:bg-grid-850/90 dark:shadow-card";
+const INSET =
+  "border-slate-100 bg-slate-50 dark:border-grid-700/60 dark:bg-grid-900/40";
+const DIVIDER = "border-slate-200 dark:border-grid-700/70";
+const EYEBROW =
+  "text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400 dark:text-grid-400";
+const HEADING = "text-slate-900 dark:text-grid-50";
+const STRONG = "text-slate-800 dark:text-grid-100";
+const BODY = "text-slate-600 dark:text-grid-300";
+const MUTED = "text-slate-500 dark:text-grid-400";
+const ACCENT_TEXT = "text-teal-700 dark:text-volt-300";
+const ACCENT_TILE =
+  "bg-teal-50 text-teal-700 dark:bg-volt-500/15 dark:text-volt-300";
+
+const FOCUS =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-volt-400 dark:focus-visible:ring-offset-grid-950";
+
+const BTN_PRIMARY =
+  "inline-flex items-center justify-center gap-2 rounded-xl bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-volt-500 dark:text-grid-950 dark:hover:bg-volt-400";
+const BTN_OUTLINE =
+  "inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-teal-300 hover:text-teal-700 disabled:cursor-not-allowed disabled:opacity-60 dark:border-grid-600 dark:bg-transparent dark:text-grid-200 dark:hover:border-volt-500/60 dark:hover:bg-volt-500/10 dark:hover:text-volt-300";
+const BTN_DANGER =
+  "inline-flex items-center justify-center gap-2 rounded-xl border border-red-300 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10";
+
+/* ============================================================
+   HELPERS
+============================================================ */
+
+function useNow(intervalMs = 30000) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+
+  return now;
+}
 
 function formatDate(value?: string | null) {
   if (!value) return "Not scheduled";
 
   const date = new Date(value);
 
-  if (Number.isNaN(date.getTime())) {
-    return "Invalid date";
-  }
+  if (Number.isNaN(date.getTime())) return "Invalid date";
 
   return date.toLocaleString("en-IN", {
     dateStyle: "medium",
@@ -87,17 +113,12 @@ function formatDate(value?: string | null) {
   });
 }
 
-function formatTimeRange(
-  start?: string | null,
-  end?: string | null,
-) {
+function formatTimeRange(start?: string | null, end?: string | null) {
   if (!start) return "Not scheduled";
 
   const startDate = new Date(start);
 
-  if (Number.isNaN(startDate.getTime())) {
-    return "Invalid time";
-  }
+  if (Number.isNaN(startDate.getTime())) return "Invalid time";
 
   const startText = startDate.toLocaleTimeString("en-IN", {
     hour: "numeric",
@@ -108,9 +129,7 @@ function formatTimeRange(
 
   const endDate = new Date(end);
 
-  if (Number.isNaN(endDate.getTime())) {
-    return startText;
-  }
+  if (Number.isNaN(endDate.getTime())) return startText;
 
   const endText = endDate.toLocaleTimeString("en-IN", {
     hour: "numeric",
@@ -120,9 +139,30 @@ function formatTimeRange(
   return `${startText} → ${endText}`;
 }
 
-/* ============================================================
-   STATUS
-============================================================ */
+/** Minutes until the slot starts. Negative once it has started. */
+function minutesUntil(start: string | undefined, now: number) {
+  if (!start) return null;
+
+  const time = new Date(start).getTime();
+
+  if (Number.isNaN(time)) return null;
+
+  return Math.round((time - now) / 60000);
+}
+
+/** "in 25 min", "in 3 h 10 min", "in 2 days" (future starts only) */
+function formatCountdown(minutes: number) {
+  if (minutes < 1) return "Starting now";
+  if (minutes < 60) return `in ${minutes} min`;
+
+  const hours = Math.floor(minutes / 60);
+
+  if (hours < 24) return `in ${hours} h ${minutes % 60} min`;
+
+  const days = Math.floor(hours / 24);
+
+  return `in ${days} day${days === 1 ? "" : "s"}`;
+}
 
 function getStatusLabel(status?: BookingStatus) {
   if (!status) return "Unknown";
@@ -135,209 +175,284 @@ function getStatusLabel(status?: BookingStatus) {
 function getStatusClass(status?: BookingStatus) {
   switch (status) {
     case "confirmed":
-      return "bg-volt-500/15 text-volt-700 dark:text-volt-300";
-
+      return "bg-emerald-50 text-emerald-700 dark:bg-volt-500/15 dark:text-volt-300";
     case "pending":
-      return "bg-amber-500/15 text-amber-700 dark:text-amber-300";
-
+      return "bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300";
     case "in_progress":
-      return "bg-blue-500/15 text-blue-700 dark:text-blue-300";
-
-    case "completed":
-      return "bg-grid-100 text-grid-700 dark:bg-grid-700 dark:text-grid-200";
-
+      return "bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300";
     case "cancelled":
     case "no_show":
-      return "bg-red-500/15 text-red-700 dark:text-red-300";
-
+      return "bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-300";
     default:
-      return "bg-grid-100 text-grid-700 dark:bg-grid-700 dark:text-grid-200";
+      return "bg-slate-100 text-slate-700 dark:bg-grid-700 dark:text-grid-200";
   }
 }
 
-function canCancel(status: BookingStatus) {
-  return status === "pending" || status === "confirmed";
+const isUpcoming = (status: BookingStatus) =>
+  status === "pending" || status === "confirmed" || status === "in_progress";
+
+const canCancel = (status: BookingStatus) =>
+  status === "pending" || status === "confirmed";
+
+/** Prefer the backend's message (FastAPI `detail`) over a generic one. */
+function errorMessage(error: unknown) {
+  const detail = (error as { response?: { data?: { detail?: unknown } } })
+    ?.response?.data?.detail;
+
+  if (typeof detail === "string" && detail) return detail;
+
+  return "We couldn't cancel this booking. Please refresh and try again.";
 }
 
-/* ============================================================
-   QR MODAL
-============================================================ */
-
-function BookingQrModal({
-  booking,
-  onClose,
-}: {
-  booking: BookingView;
-  onClose: () => void;
-}) {
-  // Close on Escape (presentation/accessibility only)
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
+function Skeleton({ className = "" }: { className?: string }) {
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-grid-950/60 p-4 backdrop-blur-sm dark:bg-black/70"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          onClose();
-        }
-      }}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="qr-modal-title"
-        className={`relative w-full max-w-md rounded-3xl border p-6 shadow-2xl ${ui.border} ${ui.panel}`}
-      >
-        {/* CLOSE */}
-
-        <button
-          type="button"
-          onClick={onClose}
-          className={`absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-xl transition hover:bg-grid-100 hover:text-grid-900 dark:hover:bg-grid-800 dark:hover:text-grid-50 ${ui.body} ${ui.focus}`}
-          aria-label="Close QR code"
-        >
-          <X size={18} />
-        </button>
-
-        <div className="text-center">
-          <div
-            className={`mx-auto flex h-12 w-12 items-center justify-center rounded-xl ${ui.accentTile}`}
-          >
-            <QrCode size={22} />
-          </div>
-
-          <p
-            className={`mt-4 text-xs font-bold uppercase tracking-widest ${ui.accentText}`}
-          >
-            Charging pass
-          </p>
-
-          <h2
-            id="qr-modal-title"
-            className={`mt-2 font-display text-xl font-bold ${ui.title}`}
-          >
-            Booking #{booking.id}
-          </h2>
-
-          <p className={`mt-1 text-sm font-medium ${ui.body}`}>
-            Show this QR code at the charging station.
-          </p>
-
-          {booking.qr_code ? (
-            <div
-              className={`mx-auto mt-6 w-fit rounded-2xl border bg-white p-3 ${ui.border}`}
-            >
-              <img
-                src={booking.qr_code}
-                alt={`QR code for booking ${booking.id}`}
-                className="h-56 w-56 object-contain"
-              />
-            </div>
-          ) : (
-            <div
-              className={`mx-auto mt-6 flex h-56 w-56 items-center justify-center rounded-2xl border border-dashed bg-grid-50 text-center dark:bg-grid-950 ${ui.border}`}
-            >
-              <div className="px-6">
-                <QrCode size={36} className={`mx-auto ${ui.body}`} />
-
-                <p className={`mt-3 text-sm font-medium ${ui.body}`}>
-                  QR code is not available for this booking.
-                </p>
-              </div>
-            </div>
-          )}
-
-          <div
-            className={`mt-6 rounded-2xl border bg-grid-50 p-4 text-left dark:bg-grid-950/70 ${ui.border}`}
-          >
-            <p className={ui.label}>Charging session</p>
-
-            <p className={`mt-2 text-sm font-semibold ${ui.strong}`}>
-              {formatDate(booking.slot_start)}
-            </p>
-
-            <p className={`mt-1 text-xs font-medium ${ui.muted}`}>
-              {formatTimeRange(booking.slot_start, booking.slot_end)}
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ============================================================
-   SKELETONS
-============================================================ */
-
-function Bar({ className = "" }: { className?: string }) {
-  return (
-    <div
-      className={`animate-pulse rounded-md motion-reduce:animate-none ${ui.skeleton} ${className}`}
+      className={`animate-pulse rounded-md bg-slate-200/80 motion-reduce:animate-none dark:bg-grid-700/60 ${className}`}
     />
   );
 }
 
-function SummarySkeleton() {
+/* ============================================================
+   MODAL SHELL (QR code and cancel confirmation)
+   Escape closes it, Tab stays inside it, and focus returns to the
+   button that opened it.
+============================================================ */
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function ModalShell({
+  labelledBy,
+  onClose,
+  children,
+}: {
+  labelledBy: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previous = document.activeElement as HTMLElement | null;
+
+    const items = () =>
+      Array.from(dialog?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
+
+    // a child may already have focus (autoFocus on the safe action)
+    if (dialog && !dialog.contains(document.activeElement)) {
+      (items()[0] ?? dialog).focus();
+    }
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onCloseRef.current();
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+
+      const list = items();
+
+      if (!list.length) {
+        event.preventDefault();
+        return;
+      }
+
+      const first = list[0];
+      const last = list[list.length - 1];
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", onKey);
+
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      previous?.focus?.();
+    };
+  }, []);
+
   return (
-    <div className="card p-5">
-      <div className="flex items-center justify-between">
-        <div className="space-y-3">
-          <Bar className="h-3 w-24" />
-          <Bar className="h-7 w-12" />
-        </div>
-        <Bar className="h-10 w-10 rounded-xl" />
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm dark:bg-black/70"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={labelledBy}
+        tabIndex={-1}
+        className={`relative w-full max-w-md rounded-3xl border p-6 shadow-2xl outline-none ${CARD}`}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className={`absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-xl text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-grid-300 dark:hover:bg-grid-800 dark:hover:text-grid-50 ${FOCUS}`}
+        >
+          <X size={18} />
+        </button>
+
+        {children}
       </div>
     </div>
   );
 }
 
-function BookingCardSkeleton() {
+function BookingQrModal({
+  booking,
+  stationName,
+  onClose,
+}: {
+  booking: BookingView;
+  stationName: string;
+  onClose: () => void;
+}) {
   return (
-    <div className="card overflow-hidden" aria-hidden="true">
-      <div className="flex flex-col gap-5 p-6 lg:flex-row lg:items-start lg:justify-between">
-        <div className="flex items-start gap-4">
-          <Bar className="h-12 w-12 shrink-0 rounded-xl" />
-          <div className="space-y-3">
-            <Bar className="h-5 w-56" />
-            <Bar className="h-4 w-40" />
+    <ModalShell labelledBy="qr-modal-title" onClose={onClose}>
+      <div className="text-center">
+        <div
+          className={`mx-auto flex h-12 w-12 items-center justify-center rounded-xl ${ACCENT_TILE}`}
+        >
+          <QrCode size={22} />
+        </div>
+
+        <p
+          className={`mt-4 text-xs font-bold uppercase tracking-widest ${ACCENT_TEXT}`}
+        >
+          Charging pass
+        </p>
+
+        <h2
+          id="qr-modal-title"
+          className={`mt-2 font-display text-xl font-bold ${HEADING}`}
+        >
+          Booking #{booking.id}
+        </h2>
+
+        <p className={`mt-1 text-sm font-medium ${BODY}`}>
+          Show this QR code at {stationName}.
+        </p>
+
+        {booking.qr_code ? (
+          <div
+            className={`mx-auto mt-6 w-fit rounded-2xl border bg-white p-3 ${DIVIDER}`}
+          >
+            <img
+              src={booking.qr_code}
+              alt={`QR code for booking ${booking.id}`}
+              className="h-56 w-56 object-contain"
+            />
           </div>
-        </div>
-        <div className="space-y-2">
-          <Bar className="h-3 w-16" />
-          <Bar className="h-4 w-12" />
-        </div>
-      </div>
-
-      <div className={`border-t px-6 py-5 ${ui.border} ${ui.inset}`}>
-        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className="space-y-3">
-              <Bar className="h-3 w-20" />
-              <Bar className="h-4 w-32" />
-              <Bar className="h-3 w-24" />
+        ) : (
+          <div
+            className={`mx-auto mt-6 flex h-56 w-56 items-center justify-center rounded-2xl border border-dashed bg-slate-50 text-center dark:bg-grid-950 ${DIVIDER}`}
+          >
+            <div className="px-6">
+              <QrCode size={36} className={`mx-auto ${BODY}`} />
+              <p className={`mt-3 text-sm font-medium ${BODY}`}>
+                QR code is not available for this booking.
+              </p>
             </div>
-          ))}
-        </div>
-      </div>
+          </div>
+        )}
 
-      <div
-        className={`flex items-center justify-between border-t px-6 py-4 ${ui.border}`}
-      >
-        <Bar className="h-4 w-36" />
-        <div className="flex gap-2">
-          <Bar className="h-9 w-24 rounded-xl" />
-          <Bar className="h-9 w-24 rounded-xl" />
+        <div className={`mt-6 rounded-2xl border p-4 text-left ${INSET}`}>
+          <p className={EYEBROW}>Charging session</p>
+
+          <p className={`mt-2 text-sm font-semibold ${STRONG}`}>
+            {formatDate(booking.slot_start)}
+          </p>
+
+          <p className={`mt-1 text-xs font-medium ${MUTED}`}>
+            {formatTimeRange(booking.slot_start, booking.slot_end)}
+          </p>
         </div>
       </div>
-    </div>
+    </ModalShell>
+  );
+}
+
+function CancelDialog({
+  booking,
+  stationName,
+  pending,
+  error,
+  onConfirm,
+  onClose,
+}: {
+  booking: BookingView;
+  stationName: string;
+  pending: boolean;
+  error: unknown;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <ModalShell labelledBy="cancel-modal-title" onClose={onClose}>
+      <div className="text-center">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-red-50 text-red-600 dark:bg-red-500/15 dark:text-red-300">
+          <XCircle size={22} />
+        </div>
+
+        <h2
+          id="cancel-modal-title"
+          className={`mt-4 font-display text-xl font-bold ${HEADING}`}
+        >
+          Cancel booking #{booking.id}?
+        </h2>
+
+        <p className={`mt-2 text-sm leading-6 ${BODY}`}>
+          This releases your reserved charging slot at {stationName} on{" "}
+          {formatDate(booking.slot_start)}.
+        </p>
+
+        {Boolean(error) && (
+          <p
+            role="alert"
+            className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs font-medium text-red-700 dark:bg-red-500/10 dark:text-red-300"
+          >
+            {errorMessage(error)}
+          </p>
+        )}
+
+        <div className="mt-6 flex flex-col gap-2 sm:flex-row-reverse">
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={pending}
+            className={`inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60 ${FOCUS}`}
+          >
+            {pending ? "Cancelling..." : "Cancel booking"}
+          </button>
+
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={pending}
+            autoFocus
+            className={`${BTN_OUTLINE} flex-1 ${FOCUS}`}
+          >
+            Keep booking
+          </button>
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -347,17 +462,19 @@ function BookingCardSkeleton() {
 
 export default function BookingsPage() {
   const queryClient = useQueryClient();
+  const now = useNow();
 
-  const [statusFilter, setStatusFilter] = useState<
-    "all" | BookingStatus
-  >("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | BookingStatus>(
+    "all",
+  );
 
-  const [selectedBooking, setSelectedBooking] =
-    useState<BookingView | null>(null);
+  const [selectedBooking, setSelectedBooking] = useState<BookingView | null>(
+    null,
+  );
 
-  /* ============================================================
-     LOAD BOOKINGS
-  ============================================================ */
+  const [cancelTarget, setCancelTarget] = useState<BookingView | null>(null);
+
+  /* ---------- bookings ---------- */
 
   const {
     data: bookings = [],
@@ -365,6 +482,7 @@ export default function BookingsPage() {
     isError,
     isFetching,
     refetch,
+    dataUpdatedAt,
   } = useQuery<BookingView[]>({
     queryKey: ["bookings"],
 
@@ -378,140 +496,398 @@ export default function BookingsPage() {
     staleTime: 10000,
   });
 
-  /* ============================================================
-     CANCEL BOOKING
-  ============================================================ */
+  /* ---------- names for stations and vehicles (shared, cached) ---------- */
+
+  const { data: stations = [] } = useQuery<StationLite[]>({
+    queryKey: ["stations"],
+    queryFn: async () => {
+      const response = await api.get("/stations");
+      return Array.isArray(response.data) ? response.data : [];
+    },
+  });
+
+  const { data: vehicles = [] } = useQuery<VehicleLite[]>({
+    queryKey: ["vehicles"],
+    queryFn: async () => {
+      const response = await api.get("/users/me/vehicles");
+      if (Array.isArray(response.data)) return response.data;
+      if (Array.isArray(response.data?.vehicles)) return response.data.vehicles;
+      return [];
+    },
+  });
+
+  const stationName = (id: number) =>
+    stations.find((station) => station.id === id)?.name ?? `Station #${id}`;
+
+  const vehicleName = (id: number) => {
+    const vehicle = vehicles.find((item) => item.id === id);
+    return vehicle
+      ? `${vehicle.name} · ${vehicle.manufacturer} ${vehicle.model}`
+      : `Vehicle #${id}`;
+  };
+
+  /* ---------- cancel ---------- */
 
   const cancelMutation = useMutation({
     mutationFn: async (bookingId: number) => {
-      const response = await api.post(
-        `/bookings/${bookingId}/cancel`,
-      );
+      const response = await api.post(`/bookings/${bookingId}/cancel`);
 
       return response.data as BookingView;
     },
 
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["bookings"],
-      });
+      setCancelTarget(null);
 
-      queryClient.invalidateQueries({
-        queryKey: ["station-queue"],
-      });
-
-      queryClient.invalidateQueries({
-        queryKey: ["dashboard-overview"],
-      });
+      queryClient.invalidateQueries({ queryKey: ["bookings"] });
+      queryClient.invalidateQueries({ queryKey: ["station-queue"] });
+      // matches every ["station", id], so the freed charger shows up
+      queryClient.invalidateQueries({ queryKey: ["station"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-overview"] });
     },
   });
 
-  /* ============================================================
-     FILTER BOOKINGS
-  ============================================================ */
+  /* ---------- grouping and filtering ---------- */
 
-  const filteredBookings = useMemo(() => {
-    const sorted = [...bookings].sort((a, b) => {
-      const aTime = a.slot_start
-        ? new Date(a.slot_start).getTime()
-        : Number.MAX_SAFE_INTEGER;
+  const time = (booking: BookingView) =>
+    booking.slot_start
+      ? new Date(booking.slot_start).getTime()
+      : Number.MAX_SAFE_INTEGER;
 
-      const bTime = b.slot_start
-        ? new Date(b.slot_start).getTime()
-        : Number.MAX_SAFE_INTEGER;
+  const filtered = useMemo(
+    () =>
+      statusFilter === "all"
+        ? bookings
+        : bookings.filter((booking) => booking.status === statusFilter),
+    [bookings, statusFilter],
+  );
 
-      return aTime - bTime;
-    });
+  // upcoming: soonest first.  past: most recent first.
+  const upcoming = useMemo(
+    () =>
+      filtered
+        .filter((booking) => isUpcoming(booking.status))
+        .sort((a, b) => time(a) - time(b)),
+    [filtered],
+  );
 
-    if (statusFilter === "all") {
-      return sorted;
-    }
+  const past = useMemo(
+    () =>
+      filtered
+        .filter((booking) => !isUpcoming(booking.status))
+        .sort((a, b) => time(b) - time(a)),
+    [filtered],
+  );
 
-    return sorted.filter(
-      (booking) => booking.status === statusFilter,
+  const activeCount = bookings.filter((b) => isUpcoming(b.status)).length;
+  const completedCount = bookings.filter((b) => b.status === "completed").length;
+  const cancelledCount = bookings.filter((b) => b.status === "cancelled").length;
+
+  const filterOptions: { value: "all" | BookingStatus; label: string }[] = [
+    { value: "all", label: "All" },
+    { value: "confirmed", label: "Confirmed" },
+    { value: "pending", label: "Pending" },
+    { value: "in_progress", label: "In progress" },
+    { value: "completed", label: "Completed" },
+    { value: "cancelled", label: "Cancelled" },
+    { value: "no_show", label: "No-show" },
+  ];
+
+  const countFor = (value: "all" | BookingStatus) =>
+    value === "all"
+      ? bookings.length
+      : bookings.filter((b) => b.status === value).length;
+
+  // Cached bookings stay on screen even if a background refresh fails.
+  const hasData = !isLoading && bookings.length > 0;
+
+  const updatedLabel = (() => {
+    if (!dataUpdatedAt) return "";
+    const seconds = Math.max(0, Math.round((now - dataUpdatedAt) / 1000));
+    if (seconds < 10) return "Updated just now";
+    if (seconds < 60) return `Updated ${seconds}s ago`;
+    return `Updated ${Math.floor(seconds / 60)}m ago`;
+  })();
+
+  /* ---------- one booking card ---------- */
+
+  const renderBooking = (booking: BookingView, nextUp: boolean) => {
+    const status = booking.status ?? "pending";
+    const waiting = status === "pending" || status === "confirmed";
+    const minutes = waiting ? minutesUntil(booking.slot_start, now) : null;
+    const startPassed = minutes !== null && minutes < 0;
+
+    return (
+      <article
+        key={booking.id}
+        className={`${CARD} overflow-hidden transition hover:border-teal-200 dark:hover:border-grid-600`}
+      >
+        {/* TOP */}
+
+        <div className="flex flex-col gap-5 p-6 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex min-w-0 items-start gap-4">
+            <div
+              className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${ACCENT_TILE}`}
+            >
+              <Zap size={21} />
+            </div>
+
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className={`font-display text-lg font-bold ${HEADING}`}>
+                  {stationName(booking.station_id)}
+                </h3>
+
+                <span
+                  className={`rounded-full px-2.5 py-1 text-xs font-semibold ${getStatusClass(status)}`}
+                >
+                  {getStatusLabel(status)}
+                </span>
+
+                {nextUp && !startPassed && (
+                  <span className="rounded-full bg-teal-700 px-2.5 py-1 text-xs font-semibold text-white dark:bg-volt-500 dark:text-grid-950">
+                    Next up
+                  </span>
+                )}
+              </div>
+
+              <p
+                className={`mt-2 inline-flex items-center gap-2 text-sm font-medium ${BODY}`}
+              >
+                <Zap size={15} />
+                Charger #{booking.charger_id}
+              </p>
+            </div>
+          </div>
+
+          <div className="shrink-0 lg:text-right">
+            {minutes !== null ? (
+              <>
+                <p className={EYEBROW}>{startPassed ? "Start time" : "Starts"}</p>
+                <p
+                  className={`mt-1 text-sm font-bold ${
+                    startPassed
+                      ? "text-amber-700 dark:text-amber-300"
+                      : ACCENT_TEXT
+                  }`}
+                >
+                  {startPassed ? "Has passed" : formatCountdown(minutes)}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className={EYEBROW}>Booking ID</p>
+                <p className={`mt-1 font-mono text-sm font-medium ${STRONG}`}>
+                  #{booking.id}
+                </p>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* DETAILS */}
+
+        <div className={`border-t px-6 py-5 ${INSET}`}>
+          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            <Detail
+              label="Charging time"
+              icon={Clock3}
+              value={formatTimeRange(booking.slot_start, booking.slot_end)}
+              subValue={formatDate(booking.slot_start)}
+            />
+
+            <Detail
+              label="Charger"
+              icon={Zap}
+              value={`Charger #${booking.charger_id}`}
+              subValue="Reserved charging point"
+            />
+
+            <Detail
+              label="Vehicle"
+              icon={TicketCheck}
+              value={vehicleName(booking.vehicle_id)}
+              subValue="Vehicle used for booking"
+            />
+
+            <Detail
+              label="Predicted wait"
+              icon={Clock3}
+              value={
+                booking.predicted_wait_minutes != null
+                  ? `${booking.predicted_wait_minutes} min`
+                  : "Not available"
+              }
+              subValue="At booking time"
+            />
+          </div>
+        </div>
+
+        {/* ACTIONS */}
+
+        <div
+          className={`flex flex-col gap-4 border-t px-6 py-4 lg:flex-row lg:items-center lg:justify-between ${DIVIDER}`}
+        >
+          <div
+            className={`flex items-center gap-2 text-xs font-medium ${BODY}`}
+          >
+            {startPassed ? (
+              <>
+                <AlertTriangle
+                  size={15}
+                  className="text-amber-600 dark:text-amber-300"
+                />
+                <span>Start time has passed</span>
+              </>
+            ) : status === "confirmed" || status === "completed" ? (
+              <>
+                <CheckCircle2
+                  size={15}
+                  className="text-teal-600 dark:text-volt-400"
+                />
+                <span>
+                  {status === "completed"
+                    ? "Charging session completed"
+                    : "Reservation confirmed"}
+                </span>
+              </>
+            ) : (
+              <>
+                <Clock3
+                  size={15}
+                  className="text-amber-600 dark:text-amber-300"
+                />
+                <span>{getStatusLabel(status)}</span>
+              </>
+            )}
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {booking.qr_code && (
+              <button
+                type="button"
+                onClick={() => setSelectedBooking(booking)}
+                className={`${BTN_OUTLINE} ${FOCUS}`}
+              >
+                <QrCode size={16} />
+                View QR
+              </button>
+            )}
+
+            <Link
+              to={`/stations/${booking.station_id}`}
+              className={`${BTN_OUTLINE} ${FOCUS}`}
+            >
+              <ExternalLink size={15} />
+              Station
+            </Link>
+
+            {canCancel(status) && (
+              <button
+                type="button"
+                onClick={() => {
+                  cancelMutation.reset();
+                  setCancelTarget(booking);
+                }}
+                className={`${BTN_DANGER} ${FOCUS}`}
+              >
+                <XCircle size={16} />
+                Cancel
+              </button>
+            )}
+          </div>
+        </div>
+      </article>
     );
-  }, [bookings, statusFilter]);
-
-  /* ============================================================
-     COUNTS
-  ============================================================ */
-
-  const activeCount = bookings.filter(
-    (booking) =>
-      booking.status === "confirmed" ||
-      booking.status === "pending" ||
-      booking.status === "in_progress",
-  ).length;
-
-  const completedCount = bookings.filter(
-    (booking) => booking.status === "completed",
-  ).length;
-
-  const cancelledCount = bookings.filter(
-    (booking) => booking.status === "cancelled",
-  ).length;
-
-  /* ============================================================
-     CANCEL HANDLER
-  ============================================================ */
-
-  const handleCancel = (booking: BookingView) => {
-    const confirmed = window.confirm(
-      `Cancel booking #${booking.id}? This will release your reserved charging slot.`,
-    );
-
-    if (!confirmed) return;
-
-    cancelMutation.mutate(booking.id);
   };
-
-  const hasData = !isLoading && !isError && bookings.length > 0;
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-6xl">
+      <div className="mx-auto max-w-6xl space-y-6">
         {/* ====================================================
             HEADER
         ==================================================== */}
 
-        <div className="mb-8 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+        <section className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <div className="flex items-center gap-2">
-              <CalendarClock size={21} className={ui.accentIcon} />
+              <CalendarClock
+                size={20}
+                className="text-teal-700 dark:text-volt-400"
+              />
 
-              <p className="label-eyebrow">Charging activity</p>
+              <p className="text-xs font-bold uppercase tracking-[0.18em] text-teal-700 dark:text-volt-300">
+                Charging activity
+              </p>
             </div>
 
             <h1
-              className={`mt-2 font-display text-3xl font-bold ${ui.title}`}
+              className={`mt-2 font-display text-3xl font-bold tracking-tight ${HEADING}`}
             >
               My Bookings
             </h1>
 
-            <p
-              className={`mt-2 max-w-2xl text-sm leading-6 ${ui.body}`}
-            >
-              Manage your charging reservations, access your charging
-              pass, and track booking status.
+            <p className={`mt-2 max-w-2xl text-sm leading-6 ${BODY}`}>
+              Manage your charging reservations, open your charging pass, and
+              track booking status.
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={() => refetch()}
-            disabled={isFetching}
-            aria-busy={isFetching}
-            className={`btn-secondary inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-60 ${ui.focus}`}
+          <div className="flex items-center gap-3">
+            {updatedLabel && (
+              <span className={`hidden text-xs sm:block ${MUTED}`}>
+                {updatedLabel}
+              </span>
+            )}
+
+            <button
+              type="button"
+              onClick={() => refetch()}
+              disabled={isFetching}
+              aria-busy={isFetching}
+              className={`${BTN_OUTLINE} ${FOCUS}`}
+            >
+              <RefreshCw
+                size={16}
+                className={
+                  isFetching ? "animate-spin motion-reduce:animate-none" : ""
+                }
+              />
+              {isFetching ? "Refreshing" : "Refresh"}
+            </button>
+          </div>
+        </section>
+
+        {/* ====================================================
+            REFRESH FAILED (cached bookings stay visible)
+        ==================================================== */}
+
+        {isError && bookings.length > 0 && (
+          <div
+            role="alert"
+            className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-400/30 dark:bg-amber-400/10 sm:flex-row sm:items-center sm:justify-between"
           >
-            <RefreshCw
-              size={16}
-              className={
-                isFetching ? "animate-spin motion-reduce:animate-none" : ""
-              }
-            />
-            {isFetching ? "Refreshing" : "Refresh"}
-          </button>
-        </div>
+            <div className="flex items-start gap-3">
+              <AlertTriangle
+                size={18}
+                className="mt-0.5 shrink-0 text-amber-700 dark:text-amber-300"
+              />
+
+              <p className="text-sm text-amber-900 dark:text-amber-200">
+                We couldn't refresh your bookings. You're seeing the last
+                loaded list.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => refetch()}
+              disabled={isFetching}
+              className={`${BTN_OUTLINE} !py-1.5 ${FOCUS}`}
+            >
+              {isFetching ? "Retrying" : "Try again"}
+            </button>
+          </div>
+        )}
 
         {/* ====================================================
             SUMMARY
@@ -519,35 +895,36 @@ export default function BookingsPage() {
 
         {isLoading && (
           <div
-            className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
+            className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
             aria-hidden="true"
           >
             {Array.from({ length: 4 }).map((_, index) => (
-              <SummarySkeleton key={index} />
+              <div key={index} className={`${CARD} p-5`}>
+                <div className="flex items-center justify-between">
+                  <div className="space-y-3">
+                    <Skeleton className="h-3 w-24" />
+                    <Skeleton className="h-7 w-12" />
+                  </div>
+                  <Skeleton className="h-10 w-10 rounded-xl" />
+                </div>
+              </div>
             ))}
           </div>
         )}
 
         {hasData && (
-          <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <SummaryCard
               label="Total bookings"
               value={bookings.length}
               icon={CalendarClock}
             />
-
-            <SummaryCard
-              label="Active"
-              value={activeCount}
-              icon={TicketCheck}
-            />
-
+            <SummaryCard label="Active" value={activeCount} icon={TicketCheck} />
             <SummaryCard
               label="Completed"
               value={completedCount}
               icon={CheckCircle2}
             />
-
             <SummaryCard
               label="Cancelled"
               value={cancelledCount}
@@ -561,46 +938,52 @@ export default function BookingsPage() {
         ==================================================== */}
 
         {isLoading && (
-          <div
-            className="mb-5 flex flex-wrap items-center gap-2"
-            aria-hidden="true"
-          >
+          <div className="flex flex-wrap items-center gap-2" aria-hidden="true">
             {Array.from({ length: 6 }).map((_, index) => (
-              <Bar key={index} className="h-8 w-24 rounded-full" />
+              <Skeleton key={index} className="h-8 w-24 rounded-full" />
             ))}
           </div>
         )}
 
         {hasData && (
           <div
-            className="mb-5 flex flex-wrap items-center gap-2"
+            className="flex flex-wrap items-center gap-2"
             role="group"
             aria-label="Filter bookings by status"
           >
-            {(
-              [
-                ["all", "All"],
-                ["confirmed", "Confirmed"],
-                ["pending", "Pending"],
-                ["in_progress", "In progress"],
-                ["completed", "Completed"],
-                ["cancelled", "Cancelled"],
-              ] as const
-            ).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setStatusFilter(value)}
-                aria-pressed={statusFilter === value}
-                className={`rounded-full border px-4 py-2 text-xs font-semibold transition ${ui.focus} ${
-                  statusFilter === value
-                    ? "border-volt-500/50 bg-volt-500/10 text-volt-700 dark:border-volt-400/40 dark:bg-volt-400/10 dark:text-volt-300"
-                    : "border-grid-200 bg-white text-grid-600 hover:border-grid-300 hover:text-grid-900 dark:border-grid-700 dark:bg-grid-900 dark:text-grid-300 dark:hover:border-grid-600 dark:hover:text-grid-100"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
+            {filterOptions.map(({ value, label }) => {
+              const count = countFor(value);
+
+              // hide statuses with no bookings, but never hide the active one
+              if (value !== "all" && count === 0 && statusFilter !== value) {
+                return null;
+              }
+
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setStatusFilter(value)}
+                  aria-pressed={statusFilter === value}
+                  className={`flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-semibold transition ${FOCUS} ${
+                    statusFilter === value
+                      ? "border-teal-700 bg-teal-700 text-white dark:border-volt-500 dark:bg-volt-500 dark:text-grid-950"
+                      : "border-slate-200 bg-white text-slate-600 hover:border-teal-300 hover:text-teal-700 dark:border-grid-700 dark:bg-grid-900/60 dark:text-grid-300 dark:hover:border-volt-500/50 dark:hover:text-volt-300"
+                  }`}
+                >
+                  {label}
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[10px] ${
+                      statusFilter === value
+                        ? "bg-white/20"
+                        : "bg-slate-100 dark:bg-grid-800"
+                    }`}
+                  >
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -615,51 +998,65 @@ export default function BookingsPage() {
             aria-live="polite"
             aria-label="Loading your bookings"
           >
-            <BookingCardSkeleton />
-            <BookingCardSkeleton />
+            {[0, 1].map((i) => (
+              <div key={i} className={`${CARD} overflow-hidden`} aria-hidden="true">
+                <div className="flex items-start gap-4 p-6">
+                  <Skeleton className="h-12 w-12 shrink-0 rounded-xl" />
+                  <div className="space-y-3">
+                    <Skeleton className="h-5 w-56" />
+                    <Skeleton className="h-4 w-40" />
+                  </div>
+                </div>
+                <div className={`border-t px-6 py-5 ${INSET}`}>
+                  <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+                    {Array.from({ length: 4 }).map((_, index) => (
+                      <div key={index} className="space-y-3">
+                        <Skeleton className="h-3 w-20" />
+                        <Skeleton className="h-4 w-32" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
             <span className="sr-only">Loading your bookings...</span>
           </div>
         )}
 
         {/* ====================================================
-            ERROR
+            ERROR (only when there is nothing to show)
         ==================================================== */}
 
-        {isError && (
+        {isError && !isLoading && bookings.length === 0 && (
           <div
             role="alert"
-            className="card border-red-500/30 p-7 dark:border-red-500/20"
+            className="rounded-2xl border border-red-200 bg-red-50 p-6 dark:border-red-500/30 dark:bg-red-500/10"
           >
             <div className="flex items-start gap-4">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-red-500/10 text-red-600 dark:text-red-300">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-red-100 text-red-600 dark:bg-red-500/20 dark:text-red-300">
                 <XCircle size={21} />
               </div>
 
               <div className="flex-1">
-                <h2
-                  className={`font-display font-semibold ${ui.title}`}
-                >
+                <h2 className="font-display font-semibold text-red-900 dark:text-red-200">
                   Unable to load bookings
                 </h2>
 
-                <p className={`mt-1 text-sm leading-6 ${ui.body}`}>
+                <p className="mt-1 text-sm leading-6 text-red-700 dark:text-red-300/80">
                   We couldn't retrieve your reservations. Make sure the
-                  backend is running and your session is still
-                  authenticated.
+                  backend is running and your session is still signed in.
                 </p>
 
                 <button
                   type="button"
                   onClick={() => refetch()}
                   disabled={isFetching}
-                  className={`btn-secondary mt-4 inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60 ${ui.focus}`}
+                  className={`mt-4 inline-flex items-center gap-2 rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-50 disabled:opacity-60 dark:border-red-500/40 dark:bg-transparent dark:text-red-300 dark:hover:bg-red-500/10 ${FOCUS}`}
                 >
                   <RefreshCw
                     size={15}
                     className={
-                      isFetching
-                        ? "animate-spin motion-reduce:animate-none"
-                        : ""
+                      isFetching ? "animate-spin motion-reduce:animate-none" : ""
                     }
                   />
                   {isFetching ? "Retrying" : "Try again"}
@@ -674,29 +1071,26 @@ export default function BookingsPage() {
         ==================================================== */}
 
         {!isLoading && !isError && bookings.length === 0 && (
-          <div className="card flex min-h-[380px] items-center justify-center p-8">
+          <div
+            className={`${CARD} flex min-h-[380px] items-center justify-center p-8`}
+          >
             <div className="max-w-md text-center">
               <div
-                className={`mx-auto flex h-16 w-16 items-center justify-center rounded-2xl ${ui.accentTile}`}
+                className={`mx-auto flex h-16 w-16 items-center justify-center rounded-2xl ${ACCENT_TILE}`}
               >
                 <CalendarClock size={30} />
               </div>
 
-              <h2
-                className={`mt-5 font-display text-xl font-bold ${ui.title}`}
-              >
+              <h2 className={`mt-5 font-display text-xl font-bold ${HEADING}`}>
                 No bookings yet
               </h2>
 
-              <p className={`mt-2 text-sm leading-6 ${ui.body}`}>
-                You haven't made a charging reservation yet. Find a
-                station and reserve a charger for your next trip.
+              <p className={`mt-2 text-sm leading-6 ${BODY}`}>
+                You haven't made a charging reservation yet. Find a station and
+                reserve a charger for your next trip.
               </p>
 
-              <Link
-                to="/map"
-                className={`btn-primary mt-6 inline-flex items-center gap-2 ${ui.focus}`}
-              >
+              <Link to="/map" className={`${BTN_PRIMARY} mt-6 ${FOCUS}`}>
                 Find a charging station
                 <ArrowRight size={16} />
               </Link>
@@ -704,240 +1098,46 @@ export default function BookingsPage() {
           </div>
         )}
 
-        {/* ====================================================
-            FILTERED EMPTY
-        ==================================================== */}
+        {/* FILTERED EMPTY */}
 
-        {!isLoading &&
-          !isError &&
-          bookings.length > 0 &&
-          filteredBookings.length === 0 && (
-            <div className="card p-10 text-center">
-              <CalendarClock
-                size={32}
-                className={`mx-auto ${ui.body}`}
-              />
+        {hasData && filtered.length === 0 && (
+          <div className={`${CARD} p-10 text-center`}>
+            <CalendarClock size={32} className={`mx-auto ${BODY}`} />
 
-              <h2
-                className={`mt-4 font-display text-lg font-semibold ${ui.title}`}
-              >
-                No {statusFilter.replace("_", " ")} bookings
-              </h2>
+            <h2 className={`mt-4 font-display text-lg font-semibold ${HEADING}`}>
+              No {statusFilter.replace(/_/g, " ")} bookings
+            </h2>
 
-              <p className={`mt-1 text-sm ${ui.body}`}>
-                Try another booking status filter.
-              </p>
+            <p className={`mt-1 text-sm ${BODY}`}>
+              Try another booking status filter.
+            </p>
 
-              <button
-                type="button"
-                onClick={() => setStatusFilter("all")}
-                className={`btn-secondary mt-5 ${ui.focus}`}
-              >
-                Show all bookings
-              </button>
-            </div>
-          )}
-
-        {/* ====================================================
-            BOOKINGS
-        ==================================================== */}
-
-        {!isLoading && !isError && filteredBookings.length > 0 && (
-          <div className="space-y-4">
-            {filteredBookings.map((booking) => {
-              const status = booking.status ?? "pending";
-
-              const viewBooking = booking as BookingView;
-
-              return (
-                <article
-                  key={booking.id}
-                  className="card overflow-hidden transition hover:border-grid-300 dark:hover:border-grid-600"
-                >
-                  {/* TOP */}
-
-                  <div className="flex flex-col gap-5 p-6 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="flex min-w-0 items-start gap-4">
-                      <div
-                        className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${ui.accentTile}`}
-                      >
-                        <Zap size={21} />
-                      </div>
-
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-3">
-                          <h2
-                            className={`font-display text-lg font-bold ${ui.title}`}
-                          >
-                            VoltGrid Charging Station
-                          </h2>
-
-                          <span
-                            className={`rounded-full px-2.5 py-1 text-xs font-semibold ${getStatusClass(
-                              status,
-                            )}`}
-                          >
-                            {getStatusLabel(status)}
-                          </span>
-                        </div>
-
-                        <div
-                          className={`mt-2 flex flex-wrap gap-x-4 gap-y-2 text-sm font-medium ${ui.body}`}
-                        >
-                          <span className="inline-flex items-center gap-2">
-                            <MapPin size={15} />
-                            Station #{booking.station_id}
-                          </span>
-
-                          <span className="inline-flex items-center gap-2">
-                            <Zap size={15} />
-                            Charger #{booking.charger_id}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="shrink-0">
-                      <p className={ui.label}>Booking ID</p>
-
-                      <p
-                        className={`mt-1 font-mono text-sm font-medium text-grid-700 dark:text-grid-200`}
-                      >
-                        #{booking.id}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* DETAILS */}
-
-                  <div
-                    className={`border-t px-6 py-5 ${ui.border} ${ui.inset}`}
-                  >
-                    <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-                      <Detail
-                        label="Charging time"
-                        icon={Clock3}
-                        value={formatTimeRange(
-                          booking.slot_start,
-                          viewBooking.slot_end,
-                        )}
-                        subValue={formatDate(booking.slot_start)}
-                      />
-
-                      <Detail
-                        label="Charger"
-                        icon={Zap}
-                        value={`Charger #${booking.charger_id}`}
-                        subValue="Reserved charging point"
-                      />
-
-                      <Detail
-                        label="Vehicle"
-                        icon={TicketCheck}
-                        value={`Vehicle #${booking.vehicle_id}`}
-                        subValue="Vehicle used for booking"
-                      />
-
-                      <Detail
-                        label="Predicted wait"
-                        icon={Clock3}
-                        value={
-                          booking.predicted_wait_minutes != null
-                            ? `${booking.predicted_wait_minutes} min`
-                            : "Not available"
-                        }
-                        subValue="At booking time"
-                      />
-                    </div>
-                  </div>
-
-                  {/* ACTIONS */}
-
-                  <div
-                    className={`flex flex-col gap-4 border-t px-6 py-4 lg:flex-row lg:items-center lg:justify-between ${ui.border}`}
-                  >
-                    <div
-                      className={`flex items-center gap-2 text-xs font-medium ${ui.body}`}
-                    >
-                      {status === "confirmed" ||
-                      status === "completed" ? (
-                        <>
-                          <CheckCircle2
-                            size={15}
-                            className={ui.accentIcon}
-                          />
-
-                          <span>
-                            {status === "completed"
-                              ? "Charging session completed"
-                              : "Reservation confirmed"}
-                          </span>
-                        </>
-                      ) : (
-                        <>
-                          <Clock3
-                            size={15}
-                            className="text-amber-600 dark:text-amber-300"
-                          />
-
-                          <span>{getStatusLabel(status)}</span>
-                        </>
-                      )}
-                    </div>
-
-                    <div className="flex flex-wrap gap-2">
-                      {booking.qr_code && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setSelectedBooking(viewBooking)
-                          }
-                          className={`btn-secondary inline-flex items-center gap-2 ${ui.focus}`}
-                        >
-                          <QrCode size={16} />
-                          View QR
-                        </button>
-                      )}
-
-                      <Link
-                        to={`/stations/${booking.station_id}`}
-                        className={`btn-secondary inline-flex items-center gap-2 ${ui.focus}`}
-                      >
-                        <ExternalLink size={15} />
-                        Station
-                      </Link>
-
-                      {canCancel(status) && (
-                        <button
-                          type="button"
-                          onClick={() => handleCancel(viewBooking)}
-                          disabled={cancelMutation.isPending}
-                          className={`inline-flex items-center gap-2 rounded-xl border border-red-500/40 px-4 py-2 text-sm font-semibold text-red-700 transition hover:border-red-500/60 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-500/30 dark:text-red-300 dark:hover:border-red-500/50 ${ui.focus}`}
-                        >
-                          <XCircle size={16} />
-
-                          {cancelMutation.isPending
-                            ? "Cancelling..."
-                            : "Cancel"}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {cancelMutation.isError &&
-                    cancelMutation.variables === booking.id && (
-                      <div
-                        role="alert"
-                        className="border-t border-red-500/30 bg-red-500/5 px-6 py-3 text-xs font-medium text-red-700 dark:border-red-500/20 dark:text-red-300"
-                      >
-                        We couldn't cancel this booking. Please refresh
-                        and try again.
-                      </div>
-                    )}
-                </article>
-              );
-            })}
+            <button
+              type="button"
+              onClick={() => setStatusFilter("all")}
+              className={`${BTN_OUTLINE} mt-5 ${FOCUS}`}
+            >
+              Show all bookings
+            </button>
           </div>
+        )}
+
+        {/* ====================================================
+            BOOKINGS: upcoming, then past
+        ==================================================== */}
+
+        {hasData && upcoming.length > 0 && (
+          <section className="space-y-4" aria-label="Upcoming bookings">
+            <h2 className={EYEBROW}>Upcoming · {upcoming.length}</h2>
+            {upcoming.map((booking, index) => renderBooking(booking, index === 0))}
+          </section>
+        )}
+
+        {hasData && past.length > 0 && (
+          <section className="space-y-4" aria-label="Past bookings">
+            <h2 className={EYEBROW}>Past · {past.length}</h2>
+            {past.map((booking) => renderBooking(booking, false))}
+          </section>
         )}
 
         {/* ====================================================
@@ -946,14 +1146,14 @@ export default function BookingsPage() {
 
         {hasData && (
           <div
-            className={`mt-6 flex flex-col gap-3 rounded-2xl border bg-grid-50 p-5 sm:flex-row sm:items-center sm:justify-between dark:bg-grid-900/70 ${ui.border}`}
+            className={`flex flex-col gap-3 rounded-2xl border p-5 sm:flex-row sm:items-center sm:justify-between ${INSET}`}
           >
             <div>
-              <p className={`text-sm font-semibold ${ui.strong}`}>
+              <p className={`text-sm font-semibold ${STRONG}`}>
                 Need another charging session?
               </p>
 
-              <p className={`mt-1 text-sm font-medium ${ui.body}`}>
+              <p className={`mt-1 text-sm font-medium ${BODY}`}>
                 Use the live map to find stations and current charger
                 availability.
               </p>
@@ -961,7 +1161,7 @@ export default function BookingsPage() {
 
             <Link
               to="/map"
-              className={`inline-flex items-center gap-2 rounded-lg text-sm font-semibold transition hover:text-volt-800 dark:hover:text-volt-200 ${ui.accentText} ${ui.focus}`}
+              className={`inline-flex items-center gap-2 rounded-lg text-sm font-semibold transition hover:underline ${ACCENT_TEXT} ${FOCUS}`}
             >
               Explore live network
               <ArrowRight size={15} />
@@ -970,14 +1170,26 @@ export default function BookingsPage() {
         )}
       </div>
 
-      {/* ======================================================
-          QR MODAL
-      ====================================================== */}
+      {/* QR MODAL */}
 
       {selectedBooking && (
         <BookingQrModal
           booking={selectedBooking}
+          stationName={stationName(selectedBooking.station_id)}
           onClose={() => setSelectedBooking(null)}
+        />
+      )}
+
+      {/* CANCEL CONFIRMATION */}
+
+      {cancelTarget && (
+        <CancelDialog
+          booking={cancelTarget}
+          stationName={stationName(cancelTarget.station_id)}
+          pending={cancelMutation.isPending}
+          error={cancelMutation.isError ? cancelMutation.error : null}
+          onConfirm={() => cancelMutation.mutate(cancelTarget.id)}
+          onClose={() => setCancelTarget(null)}
         />
       )}
     </AppShell>
@@ -985,7 +1197,7 @@ export default function BookingsPage() {
 }
 
 /* ============================================================
-   SUMMARY CARD
+   SMALL PIECES
 ============================================================ */
 
 function SummaryCard({
@@ -995,23 +1207,23 @@ function SummaryCard({
 }: {
   label: string;
   value: number;
-  icon: typeof CalendarClock;
+  icon: ElementType;
 }) {
   return (
-    <div className="card p-5">
+    <div
+      className={`${CARD} p-5 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md motion-reduce:transition-none motion-reduce:hover:translate-y-0`}
+    >
       <div className="flex items-center justify-between">
         <div>
-          <p className={ui.label}>{label}</p>
+          <p className={EYEBROW}>{label}</p>
 
-          <p
-            className={`mt-2 font-display text-2xl font-bold ${ui.title}`}
-          >
+          <p className={`mt-2 font-display text-2xl font-bold ${HEADING}`}>
             {value}
           </p>
         </div>
 
         <div
-          className={`flex h-10 w-10 items-center justify-center rounded-xl ${ui.accentTile}`}
+          className={`flex h-10 w-10 items-center justify-center rounded-xl ${ACCENT_TILE}`}
         >
           <Icon size={19} />
         </div>
@@ -1020,10 +1232,6 @@ function SummaryCard({
   );
 }
 
-/* ============================================================
-   DETAIL
-============================================================ */
-
 function Detail({
   label,
   icon: Icon,
@@ -1031,27 +1239,25 @@ function Detail({
   subValue,
 }: {
   label: string;
-  icon: typeof Clock3;
+  icon: ElementType;
   value: string;
   subValue?: string;
 }) {
   return (
     <div>
-      <p className={ui.label}>{label}</p>
+      <p className={EYEBROW}>{label}</p>
 
       <div className="mt-2 flex items-start gap-2">
         <Icon
           size={16}
-          className={`mt-0.5 shrink-0 ${ui.accentIcon}`}
+          className="mt-0.5 shrink-0 text-teal-600 dark:text-volt-400"
         />
 
         <div className="min-w-0">
-          <p className={`text-sm font-semibold ${ui.strong}`}>{value}</p>
+          <p className={`text-sm font-semibold ${STRONG}`}>{value}</p>
 
           {subValue && (
-            <p
-              className={`mt-1 text-xs font-medium leading-5 ${ui.muted}`}
-            >
+            <p className={`mt-1 text-xs font-medium leading-5 ${MUTED}`}>
               {subValue}
             </p>
           )}

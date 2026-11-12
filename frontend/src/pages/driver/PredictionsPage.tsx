@@ -48,7 +48,7 @@ ChartJS.register(
 );
 
 /* ============================================================
-   SHARED STYLES (light + dark)
+   SHARED STYLES (light + dark) - same tokens as the other pages
 ============================================================ */
 
 const CARD =
@@ -58,6 +58,10 @@ const EYEBROW =
 const HEADING = "text-slate-900 dark:text-grid-50";
 const BODY = "text-slate-600 dark:text-grid-300";
 const MUTED = "text-slate-500 dark:text-grid-400";
+
+const FOCUS =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-volt-400 dark:focus-visible:ring-offset-grid-950";
+
 const SELECT =
   "w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-900 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 dark:border-grid-600 dark:bg-grid-900/90 dark:text-grid-50 dark:focus:border-volt-500 dark:focus:ring-volt-500/20";
 
@@ -72,10 +76,14 @@ const TONES: Record<Tone, string> = {
     "bg-emerald-50 text-emerald-700 dark:bg-volt-400/15 dark:text-volt-300",
 };
 
+/* ============================================================
+   HELPERS
+============================================================ */
+
 function Skeleton({ className = "" }: { className?: string }) {
   return (
     <div
-      className={`animate-pulse rounded-md bg-slate-200/80 dark:bg-grid-700/60 ${className}`}
+      className={`animate-pulse rounded-md bg-slate-200/80 motion-reduce:animate-none dark:bg-grid-700/60 ${className}`}
     />
   );
 }
@@ -86,6 +94,9 @@ function hourLabel(timestamp?: string) {
   if (Number.isNaN(date.getTime())) return "--";
   return `${String(date.getHours()).padStart(2, "0")}:00`;
 }
+
+const isNum = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
 
 /* ============================================================
    CHART THEME
@@ -167,11 +178,16 @@ export default function PredictionsPage() {
     queryKey: ["stations"],
     queryFn: async () => {
       const response = await api.get("/stations");
-      return response.data;
+      return Array.isArray(response.data) ? response.data : [];
     },
   });
 
-  const activeStationId = stationId ?? stations[0]?.id;
+  // fall back to the first station if the chosen one is no longer listed
+  const activeStationId =
+    stationId !== null && stations.some((station) => station.id === stationId)
+      ? stationId
+      : stations[0]?.id;
+
   const activeStation = stations.find((s) => s.id === activeStationId);
 
   /* ---------- demand prediction ---------- */
@@ -190,6 +206,7 @@ export default function PredictionsPage() {
       return response.data;
     },
     enabled: Boolean(activeStationId),
+    staleTime: 5 * 60 * 1000,
   });
 
   /* ---------- queue prediction ---------- */
@@ -206,27 +223,39 @@ export default function PredictionsPage() {
       return response.data;
     },
     enabled: Boolean(activeStationId),
+    refetchInterval: 60000,
+    staleTime: 30000,
   });
 
   /* ---------- derived insights (from the forecast itself) ---------- */
 
   const demandStats = useMemo(() => {
-    if (!demand?.forecast?.length) return null;
+    const values = (demand?.forecast ?? []).filter(isNum);
 
-    const values = demand.forecast;
+    if (!values.length) return null;
+
+    const stamps = demand?.timestamps ?? [];
     let minIndex = 0;
     let maxIndex = 0;
 
-    values.forEach((value, index) => {
-      if (value < values[minIndex]) minIndex = index;
-      if (value > values[maxIndex]) maxIndex = index;
+    (demand?.forecast ?? []).forEach((value, index) => {
+      if (!isNum(value)) return;
+      const lowest = demand?.forecast[minIndex];
+      const highest = demand?.forecast[maxIndex];
+      if (!isNum(lowest) || value < lowest) minIndex = index;
+      if (!isNum(highest) || value > highest) maxIndex = index;
     });
 
+    const min = demand?.forecast[minIndex] as number;
+    const max = demand?.forecast[maxIndex] as number;
+
     return {
-      min: values[minIndex],
-      max: values[maxIndex],
-      minHour: hourLabel(demand.timestamps?.[minIndex]),
-      maxHour: hourLabel(demand.timestamps?.[maxIndex]),
+      min,
+      max,
+      minHour: hourLabel(stamps[minIndex]),
+      maxHour: hourLabel(stamps[maxIndex]),
+      // the same value all day = no real pattern to point out
+      flat: max - min < 0.01 * Math.max(max, 1),
     };
   }, [demand]);
 
@@ -238,44 +267,57 @@ export default function PredictionsPage() {
         : "steady"
     : undefined;
 
+  // the line chart shows the timeline only; the peak is a separate value
+  const queueTimeline = queue
+    ? [
+        queue.current_queue,
+        queue.queue_15min,
+        queue.queue_30min,
+        queue.queue_1hr,
+        queue.queue_2hr,
+      ]
+    : [];
+
+  const queueAll = queue ? [...queueTimeline, queue.peak_hour_queue] : [];
+
+  const queueAllZero = queueAll.length > 0 && queueAll.every((v) => v === 0);
+  const queueSteady =
+    queueAll.length > 0 &&
+    !queueAllZero &&
+    queueAll.every((v) => v === queueAll[0]);
+
   /* ---------- chart data ---------- */
 
-  const demandChart: ChartData<"line"> | null = demand
-    ? {
-        labels: demand.timestamps.map((timestamp: string) =>
-          hourLabel(timestamp),
-        ),
-        datasets: [
-          {
-            label: "Predicted demand (kWh)",
-            data: demand.forecast,
-            borderColor: chartTheme.demandColor,
-            backgroundColor: gradientFill(chartTheme.demandColor),
-            fill: true,
-            tension: 0.35,
-            borderWidth: 2.5,
-            pointRadius: 0,
-            pointHoverRadius: 5,
-            pointBackgroundColor: chartTheme.demandColor,
-          },
-        ],
-      }
-    : null;
+  const demandChart: ChartData<"line"> | null =
+    demand?.forecast?.length
+      ? {
+          labels: demand.forecast.map((_, index) =>
+            hourLabel(demand.timestamps?.[index]),
+          ),
+          datasets: [
+            {
+              label: "Predicted demand (kWh)",
+              data: demand.forecast,
+              borderColor: chartTheme.demandColor,
+              backgroundColor: gradientFill(chartTheme.demandColor),
+              fill: true,
+              tension: 0.35,
+              borderWidth: 2.5,
+              pointRadius: 0,
+              pointHoverRadius: 5,
+              pointBackgroundColor: chartTheme.demandColor,
+            },
+          ],
+        }
+      : null;
 
   const queueChart: ChartData<"line"> | null = queue
     ? {
-        labels: ["Now", "15 min", "30 min", "1 hr", "2 hr", "Peak"],
+        labels: ["Now", "15 min", "30 min", "1 hr", "2 hr"],
         datasets: [
           {
             label: "Predicted queue length",
-            data: [
-              queue.current_queue,
-              queue.queue_15min,
-              queue.queue_30min,
-              queue.queue_1hr,
-              queue.queue_2hr,
-              queue.peak_hour_queue,
-            ],
+            data: queueTimeline,
             borderColor: chartTheme.queueColor,
             backgroundColor: gradientFill(chartTheme.queueColor),
             fill: true,
@@ -289,12 +331,39 @@ export default function PredictionsPage() {
       }
     : null;
 
+  // headroom so a line at 0 stays visible, and whole vehicles only
+  const queueOptions: ChartOptions<"line"> = {
+    ...chartTheme.options,
+    scales: {
+      ...chartTheme.options.scales,
+      y: {
+        ...chartTheme.options.scales?.y,
+        suggestedMax: 3,
+        ticks: { ...chartTheme.options.scales?.y?.ticks, precision: 0 },
+      },
+    },
+  };
+
+  const demandLabel = demandStats
+    ? demandStats.flat
+      ? `Line chart of predicted demand for the next 24 hours. It stays at about ${demandStats.max.toFixed(1)} kWh.`
+      : `Line chart of predicted demand for the next 24 hours. Lowest ${demandStats.min.toFixed(1)} kWh around ${demandStats.minHour}, highest ${demandStats.max.toFixed(1)} kWh around ${demandStats.maxHour}.`
+    : "Line chart of predicted demand for the next 24 hours.";
+
+  const queueLabel = queue
+    ? `Line chart of predicted queue length. Now ${queue.current_queue}, in 15 minutes ${queue.queue_15min}, in 30 minutes ${queue.queue_30min}, in 1 hour ${queue.queue_1hr}, in 2 hours ${queue.queue_2hr} vehicles.`
+    : "Line chart of predicted queue length.";
+
   /* ---------- page states ---------- */
 
   if (stationsLoading) {
     return (
       <AppShell>
-        <div className="mx-auto max-w-7xl space-y-6">
+        <div
+          className="mx-auto max-w-7xl space-y-6"
+          role="status"
+          aria-label="Loading predictions"
+        >
           <Skeleton className="h-16 w-72" />
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {[0, 1, 2, 3].map((i) => (
@@ -305,6 +374,7 @@ export default function PredictionsPage() {
             <Skeleton className="h-96 rounded-2xl" />
             <Skeleton className="h-96 rounded-2xl" />
           </div>
+          <span className="sr-only">Loading predictions...</span>
         </div>
       </AppShell>
     );
@@ -328,7 +398,7 @@ export default function PredictionsPage() {
           <button
             type="button"
             onClick={() => refetchStations()}
-            className="mt-5 inline-flex items-center gap-2 rounded-xl bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-800 dark:bg-volt-500 dark:text-grid-950 dark:hover:bg-volt-400"
+            className={`mt-5 inline-flex items-center gap-2 rounded-xl bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-800 dark:bg-volt-500 dark:text-grid-950 dark:hover:bg-volt-400 ${FOCUS}`}
           >
             <RefreshCw size={15} />
             Try again
@@ -349,7 +419,7 @@ export default function PredictionsPage() {
           </h2>
 
           <p className={`mt-2 text-sm ${BODY}`}>
-            AI predictions will appear once charging stations are available.
+            Predictions will appear once charging stations are available.
           </p>
         </div>
       </AppShell>
@@ -357,8 +427,6 @@ export default function PredictionsPage() {
   }
 
   /* ---------- main page ---------- */
-
-  const kpiLoading = queueLoading;
 
   return (
     <AppShell>
@@ -382,14 +450,13 @@ export default function PredictionsPage() {
                 <h1
                   className={`mt-1 font-display text-2xl font-bold tracking-tight ${HEADING}`}
                 >
-                  AI Predictions
+                  Predictions
                 </h1>
               </div>
             </div>
 
             <p className={`mt-3 max-w-2xl text-sm leading-6 ${BODY}`}>
-              Predictive insights for charging demand, queue congestion and
-              station activity.
+              Predicted charging demand and queue congestion for each station.
             </p>
           </div>
 
@@ -427,10 +494,10 @@ export default function PredictionsPage() {
 
         <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Kpi
-            loading={kpiLoading}
+            loading={queueLoading}
             label="Current queue"
             value={queue?.current_queue}
-            hint="Vehicles waiting"
+            hint={queueError ? "Unavailable" : "Vehicles waiting"}
             icon={Clock3}
             tone="orange"
             badge={
@@ -460,19 +527,19 @@ export default function PredictionsPage() {
           />
 
           <Kpi
-            loading={kpiLoading}
+            loading={queueLoading}
             label="15 min queue"
             value={queue?.queue_15min}
-            hint="Predicted vehicles"
+            hint={queueError ? "Unavailable" : "Predicted vehicles"}
             icon={Activity}
             tone="blue"
           />
 
           <Kpi
-            loading={kpiLoading}
+            loading={queueLoading}
             label="Peak queue"
             value={queue?.peak_hour_queue}
-            hint="Expected peak"
+            hint={queueError ? "Unavailable" : "Expected peak"}
             icon={TrendingUp}
             tone="red"
           />
@@ -482,7 +549,15 @@ export default function PredictionsPage() {
             label="Peak demand"
             value={demandStats ? demandStats.max.toFixed(1) : undefined}
             unit="kWh"
-            hint={demandStats ? `Around ${demandStats.maxHour}` : "Next 24 hours"}
+            hint={
+              demandError
+                ? "Unavailable"
+                : demandStats
+                  ? demandStats.flat
+                    ? "Steady all day"
+                    : `Around ${demandStats.maxHour}`
+                  : "Next 24 hours"
+            }
             icon={Zap}
             tone="green"
           />
@@ -499,18 +574,39 @@ export default function PredictionsPage() {
             </div>
 
             <div className="flex-1">
-              <p className={`text-sm font-bold ${HEADING}`}>
-                Quietest time to charge{" "}
-                {activeStation ? `at ${activeStation.name}` : ""}
-              </p>
+              {demandStats.flat ? (
+                <>
+                  <p className={`text-sm font-bold ${HEADING}`}>
+                    No clear quiet or busy time yet
+                  </p>
 
-              <p className={`mt-1 text-xs leading-5 ${BODY}`}>
-                Lowest predicted demand is around{" "}
-                <span className="font-semibold">{demandStats.minHour}</span> (
-                {demandStats.min.toFixed(1)} kWh), and the busiest period is
-                around <span className="font-semibold">{demandStats.maxHour}</span>{" "}
-                ({demandStats.max.toFixed(1)} kWh).
-              </p>
+                  <p className={`mt-1 text-xs leading-5 ${BODY}`}>
+                    The forecast stays at about{" "}
+                    <span className="font-semibold">
+                      {demandStats.max.toFixed(1)} kWh
+                    </span>{" "}
+                    for the next 24 hours, so no hour stands out. This usually
+                    means there isn't enough charging history for this
+                    station yet.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className={`text-sm font-bold ${HEADING}`}>
+                    Quietest time to charge{" "}
+                    {activeStation ? `at ${activeStation.name}` : ""}
+                  </p>
+
+                  <p className={`mt-1 text-xs leading-5 ${BODY}`}>
+                    Lowest predicted demand is around{" "}
+                    <span className="font-semibold">{demandStats.minHour}</span>{" "}
+                    ({demandStats.min.toFixed(1)} kWh), and the busiest period
+                    is around{" "}
+                    <span className="font-semibold">{demandStats.maxHour}</span>{" "}
+                    ({demandStats.max.toFixed(1)} kWh).
+                  </p>
+                </>
+              )}
             </div>
           </section>
         )}
@@ -521,7 +617,7 @@ export default function PredictionsPage() {
 
         <section className="grid gap-6 lg:grid-cols-2">
           <ChartPanel
-            eyebrow="Energy intelligence"
+            eyebrow="Energy"
             title="Electricity demand forecast"
             subtitle="Next 24 hours"
             icon={TrendingUp}
@@ -533,6 +629,7 @@ export default function PredictionsPage() {
             errorText="Demand prediction unavailable."
             emptyText="No demand data available."
             hasData={Boolean(demandChart)}
+            chartLabel={demandLabel}
           >
             {demandChart && (
               <Line data={demandChart} options={chartTheme.options} />
@@ -540,9 +637,9 @@ export default function PredictionsPage() {
           </ChartPanel>
 
           <ChartPanel
-            eyebrow="Traffic intelligence"
+            eyebrow="Congestion"
             title="Queue length forecast"
-            subtitle="Short-term congestion prediction"
+            subtitle="Short-term, next 2 hours"
             icon={Clock3}
             tone="orange"
             loading={queueLoading}
@@ -552,10 +649,16 @@ export default function PredictionsPage() {
             errorText="Queue prediction unavailable."
             emptyText="No queue data available."
             hasData={Boolean(queueChart)}
+            chartLabel={queueLabel}
+            note={
+              queueAllZero
+                ? "No vehicles are expected to wait at this station over the next 2 hours, including the peak."
+                : queueSteady
+                  ? `The queue is expected to stay at ${queueAll[0]} vehicle${queueAll[0] === 1 ? "" : "s"}.`
+                  : undefined
+            }
           >
-            {queueChart && (
-              <Line data={queueChart} options={chartTheme.options} />
-            )}
+            {queueChart && <Line data={queueChart} options={queueOptions} />}
           </ChartPanel>
         </section>
 
@@ -571,43 +674,42 @@ export default function PredictionsPage() {
               </div>
 
               <div>
-                <p className={EYEBROW}>AI engine</p>
+                <p className={EYEBROW}>Forecasting</p>
                 <h2
                   className={`mt-1 font-display text-lg font-bold ${HEADING}`}
                 >
-                  How predictions work
+                  What the predictions use
                 </h2>
               </div>
             </div>
           </div>
 
           <div className="grid md:grid-cols-2 lg:grid-cols-4">
-            <ModelCard
-              title="Queue prediction"
-              text="Uses historical demand, time-of-day, day-of-week, holidays, active chargers, and booking activity."
-              model="XGBoost"
-              badge="border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-400/20 dark:bg-orange-400/5 dark:text-orange-300"
+            <InfoCard
+              title="Queue length"
+              text="Looks at past demand, time of day, day of week, holidays, active chargers and booking activity."
             />
-            <ModelCard
+            <InfoCard
               title="Waiting time"
-              text="Estimates charging delays using live queue length and charger throughput."
-              model="Random Forest"
-              badge="border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-400/20 dark:bg-blue-400/5 dark:text-blue-300"
+              text="Estimates delays from the current queue length and how quickly chargers turn over."
             />
-            <ModelCard
+            <InfoCard
               title="Energy demand"
-              text="Forecasts electricity consumption using historical charging patterns and rolling time windows."
-              model="LSTM"
-              badge="border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-volt-400/20 dark:bg-volt-400/5 dark:text-volt-300"
+              text="Forecasts electricity use from past charging patterns over rolling time windows."
             />
-            <ModelCard
+            <InfoCard
               title="Charger risk"
-              text="Identifies potential charger failures using usage history, charger age, and previous fault information."
-              model="LightGBM"
-              badge="border-purple-200 bg-purple-50 text-purple-700 dark:border-purple-400/20 dark:bg-purple-400/5 dark:text-purple-300"
+              text="Looks at usage history, charger age and earlier faults to flag chargers likely to fail."
               last
             />
           </div>
+
+          <p
+            className={`border-t border-slate-100 px-6 py-4 text-xs leading-5 dark:border-grid-700/60 ${MUTED}`}
+          >
+            Forecasts are estimates. They get more reliable as a station builds
+            up charging history.
+          </p>
         </section>
       </div>
     </AppShell>
@@ -641,7 +743,7 @@ function Kpi({
 
   return (
     <div
-      className={`${CARD} p-5 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md`}
+      className={`${CARD} p-5 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md motion-reduce:transition-none motion-reduce:hover:translate-y-0`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -697,6 +799,8 @@ function ChartPanel({
   errorText,
   emptyText,
   hasData,
+  chartLabel,
+  note,
   children,
 }: {
   eyebrow: string;
@@ -711,6 +815,8 @@ function ChartPanel({
   errorText: string;
   emptyText: string;
   hasData: boolean;
+  chartLabel: string;
+  note?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -731,12 +837,15 @@ function ChartPanel({
 
       <div className="relative mt-6 h-[320px]">
         {loading ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3">
-            <div className="flex h-40 w-full items-end gap-2 px-2">
+          <div
+            className="flex h-full flex-col items-center justify-center gap-3"
+            role="status"
+          >
+            <div className="flex h-40 w-full items-end gap-2 px-2" aria-hidden="true">
               {[35, 55, 40, 70, 50, 80, 60, 45, 65, 55].map((h, i) => (
                 <div
                   key={i}
-                  className="flex-1 animate-pulse rounded-t-md bg-slate-200/70 dark:bg-grid-700/50"
+                  className="flex-1 animate-pulse rounded-t-md bg-slate-200/70 motion-reduce:animate-none dark:bg-grid-700/50"
                   style={{ height: `${h}%` }}
                 />
               ))}
@@ -745,7 +854,7 @@ function ChartPanel({
           </div>
         ) : error ? (
           <div className="flex h-full items-center justify-center text-center">
-            <div>
+            <div role="alert">
               <AlertCircle
                 size={30}
                 className="mx-auto text-red-500 dark:text-red-400"
@@ -754,7 +863,7 @@ function ChartPanel({
               <button
                 type="button"
                 onClick={onRetry}
-                className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-teal-700 dark:text-volt-300"
+                className={`mt-3 inline-flex items-center gap-1.5 rounded text-sm font-semibold text-teal-700 dark:text-volt-300 ${FOCUS}`}
               >
                 <RefreshCw size={14} />
                 Try again
@@ -762,28 +871,32 @@ function ChartPanel({
             </div>
           </div>
         ) : hasData ? (
-          children
+          <div role="img" aria-label={chartLabel} className="h-full">
+            {children}
+          </div>
         ) : (
           <div className="flex h-full items-center justify-center">
             <p className={`text-sm ${MUTED}`}>{emptyText}</p>
           </div>
         )}
       </div>
+
+      {note && !loading && !error && hasData && (
+        <p className="mt-4 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600 dark:bg-grid-900/60 dark:text-grid-300">
+          {note}
+        </p>
+      )}
     </div>
   );
 }
 
-function ModelCard({
+function InfoCard({
   title,
   text,
-  model,
-  badge,
   last = false,
 }: {
   title: string;
   text: string;
-  model: string;
-  badge: string;
   last?: boolean;
 }) {
   return (
@@ -796,11 +909,6 @@ function ModelCard({
     >
       <p className={`text-sm font-semibold ${HEADING}`}>{title}</p>
       <p className={`mt-2 text-sm leading-6 ${MUTED}`}>{text}</p>
-      <span
-        className={`mt-4 inline-flex rounded-full border px-3 py-1 text-xs font-medium ${badge}`}
-      >
-        {model}
-      </span>
     </div>
   );
 }
