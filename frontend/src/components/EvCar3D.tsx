@@ -1,8 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js"; // NEW
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { BatteryCharging, Car, Cpu, PlugZap, RotateCw } from "lucide-react";
+import { getCarAssets } from "../data/evCarsIndia";
+
+/**
+ * NEW: set to true once you have added the 4 generic models
+ * (public/models/generic-suv.glb, generic-sedan.glb, generic-hatchback.glb,
+ * generic-mpv.glb). Then every car in the dataset shows a real 3D model.
+ * While false, cars without their own .glb keep the built-in 3D car.
+ */
+const USE_GENERIC_MODELS = false;
+
+/** NEW: length (scene units) a loaded model is scaled to. The built-in car is 4.4 long. */
+const MODEL_LENGTH = 4.4;
+
+/** NEW: free GPU memory used by a loaded model */
+function disposeObject(root: THREE.Object3D) {
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    mesh.geometry?.dispose();
+    const mat = mesh.material;
+    if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+    else mat?.dispose();
+  });
+}
 
 /* ============================================================
    VIEW PRESETS
@@ -41,6 +65,7 @@ export default function EvCar3D({
   charging = false,
   embedded = false,
   className = "",
+  carName, // NEW
 }: {
   batteryPercent?: number;
   rangeKm?: number | null;
@@ -48,6 +73,8 @@ export default function EvCar3D({
   /** true = no outer card, for use inside an existing card */
   embedded?: boolean;
   className?: string;
+  /** NEW: the car the user entered, e.g. "Mahindra XEV 9e" */
+  carName?: string | null;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
 
@@ -75,6 +102,8 @@ export default function EvCar3D({
     shadow: null as THREE.MeshBasicMaterial | null,
     key: null as THREE.DirectionalLight | null,
     hemi: null as THREE.HemisphereLight | null,
+    scene: null as THREE.Scene | null, // NEW
+    car: null as THREE.Group | null, // NEW: the built-in car
   });
 
   /* ---------- keep refs in sync with props / theme ---------- */
@@ -285,6 +314,8 @@ export default function EvCar3D({
     car.add(pack);
 
     scene.add(car);
+    l.scene = scene; // NEW
+    l.car = car; // NEW
 
     // Soft ground shadow
     const shadowCanvas = document.createElement("canvas");
@@ -367,10 +398,70 @@ export default function EvCar3D({
       renderer.dispose();
       renderer.domElement.remove();
       l.controls = null;
+      l.scene = null; // NEW
+      l.car = null; // NEW
     };
     // Scene is created once; props and theme flow through refs above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /* ---------- NEW: swap in the real model for the car the user entered ---------- */
+
+  useEffect(() => {
+    const l = live.current;
+    const scene = l.scene;
+    const builtIn = l.car;
+    if (!scene || !builtIn) return;
+
+    const assets = getCarAssets(carName ?? "");
+    const wantModel = Boolean(carName) && (!assets.isGenericModel || USE_GENERIC_MODELS);
+
+    builtIn.visible = true;
+    if (!wantModel) return;
+
+    let cancelled = false;
+    let wrapper: THREE.Group | null = null;
+
+    const loader = new GLTFLoader();
+    loader.load(
+      assets.model,
+      (gltf) => {
+        if (cancelled || !l.scene) {
+          disposeObject(gltf.scene);
+          return;
+        }
+
+        const model = gltf.scene;
+
+        const box = new THREE.Box3().setFromObject(model);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        model.position.set(-center.x, -box.min.y, -center.z);
+
+        const lengthScale = MODEL_LENGTH / Math.max(size.x, size.z, 0.001);
+        wrapper = new THREE.Group();
+        wrapper.add(model);
+        wrapper.scale.setScalar(lengthScale * assets.scale);
+        wrapper.rotation.y = assets.rotationY;
+
+        l.scene.add(wrapper);
+        builtIn.visible = false;
+      },
+      undefined,
+      (err) => {
+        console.warn(`3D model failed to load: ${assets.model}`, err);
+      },
+    );
+
+    return () => {
+      cancelled = true;
+      if (wrapper) {
+        l.scene?.remove(wrapper);
+        disposeObject(wrapper);
+      }
+      builtIn.visible = true;
+    };
+  }, [carName]);
 
   /* ---------- copy per view ---------- */
 

@@ -636,7 +636,12 @@ export default function MyEV() {
   /* the interactive 3D car (also the fallback for cars without a photo) */
   const car3D = (
     <Suspense fallback={<Skeleton className="h-[330px] w-full rounded-xl" />}>
-      <EvCar3D embedded batteryPercent={shownBattery} rangeKm={shownRange} />
+      <EvCar3D
+    embedded
+    carName="Tata Punch EV"
+    batteryPercent={shownBattery}
+    rangeKm={shownRange}
+  />
     </Suspense>
   );
 

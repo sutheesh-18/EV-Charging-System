@@ -5,6 +5,7 @@ import {
   vehicleImageSources,
   vehicleLabel,
 } from "../../lib/vehicles";
+import { evCarImageSources, findEvCar } from "../../data/evCarsIndia"; // NEW
 
 /**
  * Shows the picture of the car the driver typed.
@@ -12,6 +13,8 @@ import {
  *   <VehicleImage names={[`${manufacturer} ${model}`, name]} />
  *
  * - "byd" / "tata nexon" / "nexon.ev" ... -> that car's image
+ * - NEW: a car from the India EV dataset (evCarsIndia.ts) -> its own photo,
+ *   or a generic photo for its body type
  * - unknown car (or missing image) -> `fallback` (pass your 3D car here),
  *   otherwise a generic car shape
  * - `onResolve(true)` when a photo is on screen, `onResolve(false)` when not
@@ -46,24 +49,46 @@ export default function VehicleImage({
     [key],
   );
 
+  // NEW: look the car up in the India EV dataset too
+  const dataset = useMemo(() => {
+    for (const n of names ?? [name]) {
+      if (!n) continue;
+      const found = findEvCar(n);
+      if (found) return found;
+    }
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  // CHANGED: existing sources first, then the dataset's
   const sources = useMemo(
-    () => (match ? vehicleImageSources(match.vehicle, { angle }) : []),
-    [match, angle],
+    () => [
+      ...(match ? vehicleImageSources(match.vehicle, { angle }) : []),
+      ...evCarImageSources(dataset),
+    ],
+    [match, dataset, angle],
   );
+
+  // CHANGED: the label comes from either source
+  const label = match
+    ? vehicleLabel(match.vehicle)
+    : dataset
+      ? `${dataset.brand} ${dataset.name}`
+      : "";
 
   // which source we are on; moves forward when an image fails to load
   const [attempt, setAttempt] = useState(0);
   useEffect(() => setAttempt(0), [sources]);
 
   const src = sources[attempt];
-  const hasPhoto = Boolean(match && src);
+  const hasPhoto = Boolean(src);
 
   // tell the parent whether a photo is available
   useEffect(() => {
-    if (!match || attempt >= sources.length) onResolve?.(false);
-  }, [match, attempt, sources.length, onResolve]);
+    if (attempt >= sources.length) onResolve?.(false);
+  }, [attempt, sources.length, onResolve]);
 
-  if (!match || !src) {
+  if (!src) {
     return (
       <div className={className}>
         {fallback ?? <GenericCar name={names ? names.find(Boolean) : name} />}
@@ -76,7 +101,7 @@ export default function VehicleImage({
       <img
         key={src}
         src={src}
-        alt={vehicleLabel(match.vehicle)}
+        alt={label}
         onLoad={() => onResolve?.(hasPhoto)}
         onError={() => setAttempt((current) => current + 1)}
         className={`h-full w-full object-contain mix-blend-multiply dark:mix-blend-normal ${
@@ -88,7 +113,7 @@ export default function VehicleImage({
 
       {showLabel && (
         <figcaption className="mt-2 text-xs font-semibold text-slate-500 dark:text-grid-300">
-          {vehicleLabel(match.vehicle)}
+          {label}
         </figcaption>
       )}
     </figure>

@@ -50,8 +50,9 @@ export default function VehicleShowcase({
         <div className="h-[250px] w-full animate-pulse rounded-xl bg-slate-200/80 dark:bg-grid-700/60" />
       }
     >
-      <EvCar3D
+          <EvCar3D
         embedded
+        carName="Tata Punch EV"
         batteryPercent={batteryPercent}
         rangeKm={rangeKm}
         charging={charging}
